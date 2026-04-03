@@ -9,6 +9,7 @@ const openaiAccountService = require('../services/account/openaiAccountService')
 const openaiResponsesAccountService = require('../services/account/openaiResponsesAccountService')
 const openaiResponsesRelayService = require('../services/relay/openaiResponsesRelayService')
 const apiKeyService = require('../services/apiKeyService')
+const forwardingRuleService = require('../services/forwardingRuleService')
 const redis = require('../models/redis')
 const crypto = require('crypto')
 const ProxyHelper = require('../utils/proxyHelper')
@@ -264,7 +265,8 @@ const handleResponses = async (req, res) => {
     sessionHash = sessionId ? crypto.createHash('sha256').update(sessionId).digest('hex') : null
 
     // 从请求体中提取模型和流式标志
-    let requestedModel = req.body?.model || null
+    const clientRequestedModel = req.body?.model || null
+    let requestedModel = clientRequestedModel
     const isCodexModel =
       typeof requestedModel === 'string' && requestedModel.toLowerCase().includes('codex')
 
@@ -325,6 +327,18 @@ const handleResponses = async (req, res) => {
       logger.info(`🔀 Using OpenAI-Responses relay service for account: ${account.name}`)
       return await openaiResponsesRelayService.handleRequest(req, res, account, apiKeyData)
     }
+
+    const forwardingResolution = await forwardingRuleService.rewriteRequestModel({
+      requestBody: req.body,
+      platform: accountType,
+      accountId,
+      requestedModel: clientRequestedModel || requestedModel
+    })
+
+    if (forwardingResolution.matched) {
+      requestedModel = forwardingResolution.resolvedModel
+    }
+
     // 基于白名单构造上游所需的请求头，确保键为小写且值受控
     const incoming = req.headers || {}
 

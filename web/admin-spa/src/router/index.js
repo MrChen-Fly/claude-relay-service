@@ -14,6 +14,7 @@ const ApiKeysView = () => import('@/views/ApiKeysView.vue')
 const ApiKeyUsageRecordsView = () => import('@/views/ApiKeyUsageRecordsView.vue')
 const AccountsView = () => import('@/views/AccountsView.vue')
 const AccountUsageRecordsView = () => import('@/views/AccountUsageRecordsView.vue')
+const ForwardingRulesView = () => import('@/views/ForwardingRulesView.vue')
 const SettingsView = () => import('@/views/SettingsView.vue')
 const ApiStatsView = () => import('@/views/ApiStatsView.vue')
 const QuotaCardsView = () => import('@/views/QuotaCardsView.vue')
@@ -120,6 +121,18 @@ const routes = [
         path: '',
         name: 'AccountUsageRecords',
         component: AccountUsageRecordsView
+      }
+    ]
+  },
+  {
+    path: '/forwarding-rules',
+    component: MainLayout,
+    meta: { requiresAuth: true },
+    children: [
+      {
+        path: '',
+        name: 'ForwardingRules',
+        component: ForwardingRulesView
       }
     ]
   },
