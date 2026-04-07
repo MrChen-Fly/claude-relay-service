@@ -114,7 +114,38 @@ const config = {
       process.env.OPENAI_L1_CACHE_MAX_TEMPERATURE !== undefined &&
       process.env.OPENAI_L1_CACHE_MAX_TEMPERATURE !== ''
         ? parseFloat(process.env.OPENAI_L1_CACHE_MAX_TEMPERATURE)
-        : 0.3
+        : 0.3,
+    l2: {
+      enabled: process.env.OPENAI_L2_CACHE_ENABLED !== 'false',
+      shadowMode: process.env.OPENAI_L2_CACHE_SHADOW_MODE !== 'false',
+      embeddingModel: process.env.OPENAI_L2_CACHE_EMBEDDING_MODEL || 'text-embedding-3-small',
+      similarityThreshold:
+        process.env.OPENAI_L2_CACHE_SIMILARITY_THRESHOLD !== undefined &&
+        process.env.OPENAI_L2_CACHE_SIMILARITY_THRESHOLD !== ''
+          ? parseFloat(process.env.OPENAI_L2_CACHE_SIMILARITY_THRESHOLD)
+          : 0.95,
+      entryTtlSeconds: parseInt(process.env.OPENAI_L2_CACHE_ENTRY_TTL_SECONDS) || 604800,
+      embeddingTtlSeconds:
+        parseInt(process.env.OPENAI_L2_CACHE_EMBEDDING_TTL_SECONDS) || 2592000,
+      maxCandidates: parseInt(process.env.OPENAI_L2_CACHE_MAX_CANDIDATES) || 20,
+      maxIndexedEntries: parseInt(process.env.OPENAI_L2_CACHE_MAX_INDEXED_ENTRIES) || 200,
+      maxTextLength: parseInt(process.env.OPENAI_L2_CACHE_MAX_TEXT_LENGTH) || 12000,
+      rankAcceptanceThreshold:
+        process.env.OPENAI_L2_CACHE_RANK_ACCEPTANCE_THRESHOLD !== undefined &&
+        process.env.OPENAI_L2_CACHE_RANK_ACCEPTANCE_THRESHOLD !== ''
+          ? parseFloat(process.env.OPENAI_L2_CACHE_RANK_ACCEPTANCE_THRESHOLD)
+          : 0.9,
+      maxCacheableTemperature:
+        process.env.OPENAI_L2_CACHE_MAX_TEMPERATURE !== undefined &&
+        process.env.OPENAI_L2_CACHE_MAX_TEMPERATURE !== ''
+          ? parseFloat(process.env.OPENAI_L2_CACHE_MAX_TEMPERATURE)
+          : 0.3,
+      contextBuffer: {
+        enabled: process.env.OPENAI_L2_CACHE_CONTEXT_BUFFER_ENABLED !== 'false',
+        ttlSeconds: parseInt(process.env.OPENAI_L2_CACHE_CONTEXT_BUFFER_TTL_SECONDS) || 604800,
+        maxItems: parseInt(process.env.OPENAI_L2_CACHE_CONTEXT_BUFFER_MAX_ITEMS) || 6
+      }
+    }
   },
 
   // 📈 使用限制

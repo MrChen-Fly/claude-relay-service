@@ -4,6 +4,52 @@ import { ref, computed } from 'vue'
 import { getDashboardApi, getUsageCostsApi, getUsageStatsApi } from '@/utils/http_apis'
 import { showToast } from '@/utils/tools'
 
+function createDefaultCacheMetrics() {
+  return {
+    l1: {
+      enabled: true,
+      counters: {
+        cache_hit_exact: 0,
+        cache_miss: 0,
+        cache_bypass: 0,
+        cache_write: 0
+      },
+      totals: {
+        lookups: 0,
+        requests: 0
+      },
+      rates: {
+        hitRate: 0
+      }
+    },
+    l2: {
+      enabled: true,
+      shadowMode: true,
+      embeddingModel: 'text-embedding-3-small',
+      similarityThreshold: 0.95,
+      counters: {
+        cache_hit_semantic: 0,
+        cache_shadow_hit: 0,
+        cache_miss: 0,
+        cache_bypass: 0,
+        cache_write: 0,
+        embedding_hit: 0,
+        embedding_miss: 0
+      },
+      totals: {
+        lookups: 0,
+        requests: 0,
+        embeddingRequests: 0
+      },
+      rates: {
+        semanticHitRate: 0,
+        shadowHitRate: 0,
+        embeddingHitRate: 0
+      }
+    }
+  }
+}
+
 export const useDashboardStore = defineStore('dashboard', () => {
   // 状态
   const loading = ref(false)
@@ -44,6 +90,7 @@ export const useDashboardStore = defineStore('dashboard', () => {
     isHistoricalMetrics: false,
     systemStatus: '正常',
     uptime: 0,
+    cacheMetrics: createDefaultCacheMetrics(),
     systemTimezone: 8 // 默认 UTC+8
   })
 
@@ -248,6 +295,7 @@ export const useDashboardStore = defineStore('dashboard', () => {
         const systemAverages = dashboardResponse.data.systemAverages || {}
         const realtimeMetrics = dashboardResponse.data.realtimeMetrics || {}
         const systemHealth = dashboardResponse.data.systemHealth || {}
+        const cacheMetrics = dashboardResponse.data.cacheMetrics || createDefaultCacheMetrics()
 
         dashboardData.value = {
           totalApiKeys: overview.totalApiKeys || 0,
@@ -289,6 +337,7 @@ export const useDashboardStore = defineStore('dashboard', () => {
           isHistoricalMetrics: realtimeMetrics.isHistorical || false,
           systemStatus: systemHealth.redisConnected ? '正常' : '异常',
           uptime: systemHealth.uptime || 0,
+          cacheMetrics,
           systemTimezone: dashboardResponse.data.systemTimezone || 8
         }
       }

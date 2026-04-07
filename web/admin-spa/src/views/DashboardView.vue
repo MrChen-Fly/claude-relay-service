@@ -458,6 +458,111 @@
       </div>
     </div>
 
+    <!-- OpenAI 缓存观测 -->
+    <div class="mb-4 sm:mb-6 md:mb-8">
+      <div class="card p-4 sm:p-6">
+        <div class="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <h3 class="text-lg font-bold text-gray-900 dark:text-gray-100 sm:text-xl">
+              OpenAI 缓存观测
+            </h3>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+              L2 默认开启，当前模式: {{ l2ModeLabel }}
+            </p>
+          </div>
+          <div class="flex flex-wrap items-center gap-2 text-xs">
+            <span
+              class="rounded-full border border-blue-200 bg-blue-50 px-3 py-1 font-medium text-blue-700 dark:border-blue-900/60 dark:bg-blue-900/20 dark:text-blue-300"
+            >
+              L1 {{ l1CacheMetrics.enabled ? '开启' : '关闭' }}
+            </span>
+            <span
+              class="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 font-medium text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-900/20 dark:text-emerald-300"
+            >
+              L2 {{ l2CacheMetrics.enabled ? '开启' : '关闭' }}
+            </span>
+            <span
+              class="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 font-medium text-amber-700 dark:border-amber-900/60 dark:bg-amber-900/20 dark:text-amber-300"
+            >
+              阈值 {{ formatSimilarityThreshold(l2CacheMetrics.similarityThreshold) }}
+            </span>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div
+            class="rounded-2xl border border-sky-100 bg-gradient-to-br from-sky-50 to-white p-4 dark:border-sky-900/40 dark:from-sky-950/20 dark:to-gray-900"
+          >
+            <p class="text-xs font-semibold text-gray-600 dark:text-gray-400">L1 精确命中率</p>
+            <p class="mt-2 text-2xl font-bold text-sky-600">
+              {{ formatRatioPercent(l1CacheMetrics.rates.hitRate) }}
+            </p>
+            <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
+              命中 {{ formatNumber(l1CacheMetrics.counters.cache_hit_exact) }} | Miss
+              {{ formatNumber(l1CacheMetrics.counters.cache_miss) }}
+            </p>
+            <p class="mt-1 text-xs text-gray-400 dark:text-gray-500">
+              Bypass {{ formatNumber(l1CacheMetrics.counters.cache_bypass) }} | 写入
+              {{ formatNumber(l1CacheMetrics.counters.cache_write) }}
+            </p>
+          </div>
+
+          <div
+            class="rounded-2xl border border-emerald-100 bg-gradient-to-br from-emerald-50 to-white p-4 dark:border-emerald-900/40 dark:from-emerald-950/20 dark:to-gray-900"
+          >
+            <p class="text-xs font-semibold text-gray-600 dark:text-gray-400">
+              {{ l2PrimaryMetricLabel }}
+            </p>
+            <p class="mt-2 text-2xl font-bold text-emerald-600">
+              {{ formatRatioPercent(l2PrimaryMetricRate) }}
+            </p>
+            <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
+              语义命中 {{ formatNumber(l2CacheMetrics.counters.cache_hit_semantic) }} | Shadow
+              {{ formatNumber(l2CacheMetrics.counters.cache_shadow_hit) }}
+            </p>
+            <p class="mt-1 text-xs text-gray-400 dark:text-gray-500">
+              Miss {{ formatNumber(l2CacheMetrics.counters.cache_miss) }} | Lookups
+              {{ formatNumber(l2CacheMetrics.totals.lookups) }}
+            </p>
+          </div>
+
+          <div
+            class="rounded-2xl border border-violet-100 bg-gradient-to-br from-violet-50 to-white p-4 dark:border-violet-900/40 dark:from-violet-950/20 dark:to-gray-900"
+          >
+            <p class="text-xs font-semibold text-gray-600 dark:text-gray-400">
+              Embedding 缓存命中率
+            </p>
+            <p class="mt-2 text-2xl font-bold text-violet-600">
+              {{ formatRatioPercent(l2CacheMetrics.rates.embeddingHitRate) }}
+            </p>
+            <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
+              命中 {{ formatNumber(l2CacheMetrics.counters.embedding_hit) }} | Miss
+              {{ formatNumber(l2CacheMetrics.counters.embedding_miss) }}
+            </p>
+            <p class="mt-1 text-xs text-gray-400 dark:text-gray-500">
+              请求 {{ formatNumber(l2CacheMetrics.totals.embeddingRequests) }}
+            </p>
+          </div>
+
+          <div
+            class="rounded-2xl border border-amber-100 bg-gradient-to-br from-amber-50 to-white p-4 dark:border-amber-900/40 dark:from-amber-950/20 dark:to-gray-900"
+          >
+            <p class="text-xs font-semibold text-gray-600 dark:text-gray-400">L2 工作模式</p>
+            <p class="mt-2 text-2xl font-bold text-amber-600">
+              {{ l2ModeLabel }}
+            </p>
+            <p class="mt-2 truncate text-xs text-gray-500 dark:text-gray-400">
+              {{ l2CacheMetrics.embeddingModel }}
+            </p>
+            <p class="mt-1 text-xs text-gray-400 dark:text-gray-500">
+              写入 {{ formatNumber(l2CacheMetrics.counters.cache_write) }} | Bypass
+              {{ formatNumber(l2CacheMetrics.counters.cache_bypass) }}
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- 模型消费统计 -->
     <div class="mb-8">
       <div class="mb-4 flex flex-col gap-4 sm:mb-6">
@@ -836,6 +941,49 @@ const accountGroupOptions = [
 ]
 
 const accountTrendUpdating = ref(false)
+const emptyCacheMetrics = {
+  l1: {
+    enabled: true,
+    counters: {
+      cache_hit_exact: 0,
+      cache_miss: 0,
+      cache_bypass: 0,
+      cache_write: 0
+    },
+    totals: {
+      lookups: 0,
+      requests: 0
+    },
+    rates: {
+      hitRate: 0
+    }
+  },
+  l2: {
+    enabled: true,
+    shadowMode: true,
+    embeddingModel: 'text-embedding-3-small',
+    similarityThreshold: 0.95,
+    counters: {
+      cache_hit_semantic: 0,
+      cache_shadow_hit: 0,
+      cache_miss: 0,
+      cache_bypass: 0,
+      cache_write: 0,
+      embedding_hit: 0,
+      embedding_miss: 0
+    },
+    totals: {
+      lookups: 0,
+      requests: 0,
+      embeddingRequests: 0
+    },
+    rates: {
+      semanticHitRate: 0,
+      shadowHitRate: 0,
+      embeddingHitRate: 0
+    }
+  }
+}
 
 // 余额/配额汇总
 const balanceSummary = ref({
@@ -900,6 +1048,13 @@ const formatCurrencyUsd = (amount) => {
   return `$${value.toFixed(6)}`
 }
 
+const formatRatioPercent = (value) => `${((Number(value) || 0) * 100).toFixed(1)}%`
+
+const formatSimilarityThreshold = (value) => {
+  const numericValue = Number(value)
+  return Number.isFinite(numericValue) ? numericValue.toFixed(2) : '--'
+}
+
 const formatLastUpdate = (isoString) => {
   if (!isoString) return '未知'
   const date = new Date(isoString)
@@ -945,6 +1100,24 @@ const chartColors = computed(() => ({
   grid: isDarkMode.value ? 'rgba(75, 85, 99, 0.3)' : 'rgba(0, 0, 0, 0.1)',
   legend: isDarkMode.value ? '#e5e7eb' : '#374151'
 }))
+
+const l1CacheMetrics = computed(() => dashboardData.value.cacheMetrics?.l1 || emptyCacheMetrics.l1)
+const l2CacheMetrics = computed(() => dashboardData.value.cacheMetrics?.l2 || emptyCacheMetrics.l2)
+const l2PrimaryMetricLabel = computed(() =>
+  l2CacheMetrics.value.shadowMode ? 'L2 Shadow 召回率' : 'L2 语义命中率'
+)
+const l2PrimaryMetricRate = computed(() =>
+  l2CacheMetrics.value.shadowMode
+    ? l2CacheMetrics.value.rates.shadowHitRate
+    : l2CacheMetrics.value.rates.semanticHitRate
+)
+const l2ModeLabel = computed(() => {
+  if (!l2CacheMetrics.value.enabled) {
+    return '已关闭'
+  }
+
+  return l2CacheMetrics.value.shadowMode ? 'Shadow 观测' : '命中返回'
+})
 
 function formatCostValue(cost) {
   if (!Number.isFinite(cost)) {

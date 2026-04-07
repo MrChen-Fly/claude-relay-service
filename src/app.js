@@ -439,9 +439,13 @@ class Application {
       // 📊 指标端点
       this.app.get('/metrics', async (req, res) => {
         try {
-          const stats = await redis.getSystemStats()
+          const [stats, openaiCache] = await Promise.all([
+            redis.getSystemStats(),
+            redis.getOpenAICacheMetrics()
+          ])
           const metrics = {
             ...stats,
+            openaiCache,
             uptime: process.uptime(),
             memory: process.memoryUsage(),
             timestamp: new Date().toISOString()

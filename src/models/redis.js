@@ -4095,6 +4095,19 @@ class RedisClient {
 
 const redisClient = new RedisClient()
 
+function parseOpenAICacheValue(rawValue, cacheKey, entityLabel) {
+  if (!rawValue) {
+    return null
+  }
+
+  try {
+    return JSON.parse(rawValue)
+  } catch (error) {
+    logger.error(`Failed to parse ${entityLabel} ${cacheKey}:`, error)
+    return null
+  }
+}
+
 redisClient.getOpenAIL1CacheEntry = async function (cacheKey) {
   try {
     const client = this.getClient()
@@ -4143,12 +4156,337 @@ redisClient.incrementOpenAIL1CacheMetric = async function (metricName) {
   }
 }
 
+function parseOpenAICacheMetricValue(value) {
+  const parsed = parseInt(value, 10)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function buildOpenAICacheMetricCounters(rawMetrics = {}, metricNames = []) {
+  return metricNames.reduce((result, metricName) => {
+    result[metricName] = parseOpenAICacheMetricValue(rawMetrics[metricName])
+    return result
+  }, {})
+}
+
+function calculateOpenAICacheRate(numerator, denominator) {
+  if (!denominator) {
+    return 0
+  }
+
+  return Number((numerator / denominator).toFixed(4))
+}
+
+redisClient.getOpenAICacheMetrics = async function () {
+  const defaultMetrics = {
+    l1: {
+      enabled: config.openaiCache?.enabled !== false,
+      counters: {
+        cache_hit_exact: 0,
+        cache_miss: 0,
+        cache_bypass: 0,
+        cache_write: 0
+      },
+      totals: {
+        lookups: 0,
+        requests: 0
+      },
+      rates: {
+        hitRate: 0
+      }
+    },
+    l2: {
+      enabled: config.openaiCache?.l2?.enabled !== false,
+      shadowMode: config.openaiCache?.l2?.shadowMode !== false,
+      embeddingModel: config.openaiCache?.l2?.embeddingModel || 'text-embedding-3-small',
+      similarityThreshold:
+        typeof config.openaiCache?.l2?.similarityThreshold === 'number'
+          ? config.openaiCache.l2.similarityThreshold
+          : 0.95,
+      counters: {
+        cache_hit_semantic: 0,
+        cache_shadow_hit: 0,
+        cache_miss: 0,
+        cache_bypass: 0,
+        cache_write: 0,
+        embedding_hit: 0,
+        embedding_miss: 0
+      },
+      totals: {
+        lookups: 0,
+        requests: 0,
+        embeddingRequests: 0
+      },
+      rates: {
+        semanticHitRate: 0,
+        shadowHitRate: 0,
+        embeddingHitRate: 0
+      }
+    }
+  }
+
+  try {
+    const client = this.getClient()
+    if (!client) {
+      return defaultMetrics
+    }
+
+    const [l1RawMetrics, l2RawMetrics] = await Promise.all([
+      client.hgetall('metrics:openai:l1'),
+      client.hgetall('metrics:openai:l2')
+    ])
+
+    const l1Counters = buildOpenAICacheMetricCounters(l1RawMetrics, [
+      'cache_hit_exact',
+      'cache_miss',
+      'cache_bypass',
+      'cache_write'
+    ])
+    const l2Counters = buildOpenAICacheMetricCounters(l2RawMetrics, [
+      'cache_hit_semantic',
+      'cache_shadow_hit',
+      'cache_miss',
+      'cache_bypass',
+      'cache_write',
+      'embedding_hit',
+      'embedding_miss'
+    ])
+
+    const l1Lookups = l1Counters.cache_hit_exact + l1Counters.cache_miss
+    const l2Lookups =
+      l2Counters.cache_hit_semantic + l2Counters.cache_shadow_hit + l2Counters.cache_miss
+    const l2EmbeddingRequests = l2Counters.embedding_hit + l2Counters.embedding_miss
+
+    return {
+      l1: {
+        ...defaultMetrics.l1,
+        counters: l1Counters,
+        totals: {
+          lookups: l1Lookups,
+          requests: l1Lookups + l1Counters.cache_bypass
+        },
+        rates: {
+          hitRate: calculateOpenAICacheRate(l1Counters.cache_hit_exact, l1Lookups)
+        }
+      },
+      l2: {
+        ...defaultMetrics.l2,
+        counters: l2Counters,
+        totals: {
+          lookups: l2Lookups,
+          requests: l2Lookups + l2Counters.cache_bypass,
+          embeddingRequests: l2EmbeddingRequests
+        },
+        rates: {
+          semanticHitRate: calculateOpenAICacheRate(l2Counters.cache_hit_semantic, l2Lookups),
+          shadowHitRate: calculateOpenAICacheRate(l2Counters.cache_shadow_hit, l2Lookups),
+          embeddingHitRate: calculateOpenAICacheRate(l2Counters.embedding_hit, l2EmbeddingRequests)
+        }
+      }
+    }
+  } catch (error) {
+    logger.error('Failed to collect OpenAI cache metrics:', error)
+    return defaultMetrics
+  }
+}
+
 redisClient.acquireOpenAIL1CacheLock = async function (lockKey, lockValue, ttlMs) {
   return await this.setAccountLock(lockKey, lockValue, ttlMs)
 }
 
 redisClient.releaseOpenAIL1CacheLock = async function (lockKey, lockValue) {
   return await this.releaseAccountLock(lockKey, lockValue)
+}
+
+redisClient.getOpenAIL2Embedding = async function (cacheKey) {
+  try {
+    const client = this.getClient()
+    if (!client) {
+      return null
+    }
+
+    return parseOpenAICacheValue(await client.get(cacheKey), cacheKey, 'OpenAI L2 embedding cache')
+  } catch (error) {
+    logger.error(`Failed to read OpenAI L2 embedding cache ${cacheKey}:`, error)
+    return null
+  }
+}
+
+redisClient.getOpenAIL2Embeddings = async function (cacheKeys = []) {
+  try {
+    const client = this.getClient()
+    if (!client || cacheKeys.length === 0) {
+      return []
+    }
+
+    const values = await client.mget(cacheKeys)
+    return values.map((value, index) =>
+      parseOpenAICacheValue(value, cacheKeys[index], 'OpenAI L2 embedding cache')
+    )
+  } catch (error) {
+    logger.error('Failed to read OpenAI L2 embedding caches:', error)
+    return cacheKeys.map(() => null)
+  }
+}
+
+redisClient.setOpenAIL2Embedding = async function (cacheKey, payload, ttlSeconds) {
+  try {
+    const client = this.getClient()
+    if (!client) {
+      return false
+    }
+
+    await client.set(cacheKey, JSON.stringify(payload), 'EX', ttlSeconds)
+    return true
+  } catch (error) {
+    logger.error(`Failed to write OpenAI L2 embedding cache ${cacheKey}:`, error)
+    return false
+  }
+}
+
+redisClient.getOpenAIL2Entry = async function (cacheKey) {
+  try {
+    const client = this.getClient()
+    if (!client) {
+      return null
+    }
+
+    return parseOpenAICacheValue(await client.get(cacheKey), cacheKey, 'OpenAI L2 cache entry')
+  } catch (error) {
+    logger.error(`Failed to read OpenAI L2 cache entry ${cacheKey}:`, error)
+    return null
+  }
+}
+
+redisClient.getOpenAIL2Entries = async function (cacheKeys = []) {
+  try {
+    const client = this.getClient()
+    if (!client || cacheKeys.length === 0) {
+      return []
+    }
+
+    const values = await client.mget(cacheKeys)
+    return values.map((value, index) =>
+      parseOpenAICacheValue(value, cacheKeys[index], 'OpenAI L2 cache entry')
+    )
+  } catch (error) {
+    logger.error('Failed to read OpenAI L2 cache entries:', error)
+    return cacheKeys.map(() => null)
+  }
+}
+
+redisClient.setOpenAIL2Entry = async function (cacheKey, payload, ttlSeconds) {
+  try {
+    const client = this.getClient()
+    if (!client) {
+      return false
+    }
+
+    await client.set(cacheKey, JSON.stringify(payload), 'EX', ttlSeconds)
+    return true
+  } catch (error) {
+    logger.error(`Failed to write OpenAI L2 cache entry ${cacheKey}:`, error)
+    return false
+  }
+}
+
+redisClient.getOpenAIL2ContextBuffer = async function (cacheKey, limit = 6) {
+  try {
+    const client = this.getClient()
+    if (!client || !cacheKey) {
+      return []
+    }
+
+    const normalizedLimit = Math.max(1, limit)
+    const values = await client.lrange(cacheKey, -normalizedLimit, -1)
+    return values
+      .map((value) => parseOpenAICacheValue(value, cacheKey, 'OpenAI L2 context buffer entry'))
+      .filter(Boolean)
+  } catch (error) {
+    logger.error(`Failed to read OpenAI L2 context buffer ${cacheKey}:`, error)
+    return []
+  }
+}
+
+redisClient.appendOpenAIL2ContextBuffer = async function (cacheKey, payload, ttlSeconds, maxItems) {
+  try {
+    const client = this.getClient()
+    if (!client || !cacheKey) {
+      return false
+    }
+
+    const pipeline = client.pipeline()
+    pipeline.rpush(cacheKey, JSON.stringify(payload))
+    if (Number.isInteger(maxItems) && maxItems > 0) {
+      pipeline.ltrim(cacheKey, -maxItems, -1)
+    }
+    pipeline.expire(cacheKey, ttlSeconds)
+    await pipeline.exec()
+    return true
+  } catch (error) {
+    logger.error(`Failed to append OpenAI L2 context buffer ${cacheKey}:`, error)
+    return false
+  }
+}
+
+redisClient.addOpenAIL2IndexEntry = async function (
+  indexKey,
+  member,
+  score,
+  ttlSeconds,
+  maxIndexedEntries
+) {
+  try {
+    const client = this.getClient()
+    if (!client) {
+      return false
+    }
+
+    const pipeline = client.pipeline()
+    pipeline.zadd(indexKey, score, member)
+    pipeline.expire(indexKey, ttlSeconds)
+    await pipeline.exec()
+
+    if (Number.isInteger(maxIndexedEntries) && maxIndexedEntries > 0) {
+      const currentSize = await client.zcard(indexKey)
+      const trimCount = currentSize - maxIndexedEntries
+      if (trimCount > 0) {
+        await client.zremrangebyrank(indexKey, 0, trimCount - 1)
+      }
+    }
+
+    return true
+  } catch (error) {
+    logger.error(`Failed to write OpenAI L2 index entry ${indexKey}:${member}:`, error)
+    return false
+  }
+}
+
+redisClient.getOpenAIL2CandidateKeys = async function (indexKey, limit = 20) {
+  try {
+    const client = this.getClient()
+    if (!client) {
+      return []
+    }
+
+    return await client.zrevrange(indexKey, 0, Math.max(0, limit - 1))
+  } catch (error) {
+    logger.error(`Failed to read OpenAI L2 candidate keys ${indexKey}:`, error)
+    return []
+  }
+}
+
+redisClient.incrementOpenAIL2CacheMetric = async function (metricName) {
+  try {
+    const client = this.getClient()
+    if (!client) {
+      return 0
+    }
+
+    return await client.hincrby('metrics:openai:l2', metricName, 1)
+  } catch (error) {
+    logger.error(`Failed to increment OpenAI L2 cache metric ${metricName}:`, error)
+    return 0
+  }
 }
 
 // 分布式锁相关方法
