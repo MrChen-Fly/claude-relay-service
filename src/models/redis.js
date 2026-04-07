@@ -3318,6 +3318,33 @@ class RedisClient {
     return await this.getConcurrency(compositeKey)
   }
 
+  // 🤖 OpenAI-Responses 账户并发控制（复用现有并发机制）
+  async incrOpenAIResponsesAccountConcurrency(accountId, requestId, leaseSeconds = null) {
+    if (!requestId) {
+      throw new Error('Request ID is required for openai-responses account concurrency tracking')
+    }
+    const compositeKey = `openai_responses_account:${accountId}`
+    return await this.incrConcurrency(compositeKey, requestId, leaseSeconds)
+  }
+
+  async refreshOpenAIResponsesAccountConcurrencyLease(accountId, requestId, leaseSeconds = null) {
+    if (!requestId) {
+      return 0
+    }
+    const compositeKey = `openai_responses_account:${accountId}`
+    return await this.refreshConcurrencyLease(compositeKey, requestId, leaseSeconds)
+  }
+
+  async decrOpenAIResponsesAccountConcurrency(accountId, requestId) {
+    const compositeKey = `openai_responses_account:${accountId}`
+    return await this.decrConcurrency(compositeKey, requestId)
+  }
+
+  async getOpenAIResponsesAccountConcurrency(accountId) {
+    const compositeKey = `openai_responses_account:${accountId}`
+    return await this.getConcurrency(compositeKey)
+  }
+
   // 🔧 并发管理方法（用于管理员手动清理）
 
   /**

@@ -425,6 +425,7 @@ router.get('/sync/export-accounts', authenticateAdmin, async (req, res) => {
         priority: Number.parseInt(full.priority, 10) || 50,
         status: full.status || 'active',
         proxy,
+        maxConcurrentTasks: Number.parseInt(full.maxConcurrentTasks, 10) || 0,
         credentials,
         extra: {
           crs_account_id: full.id,
@@ -436,7 +437,8 @@ router.get('/sync/export-accounts', authenticateAdmin, async (req, res) => {
           crs_is_active: full.isActive === 'true',
           crs_schedulable: full.schedulable !== 'false',
           crs_priority: Number.parseInt(full.priority, 10) || 50,
-          crs_status: full.status || 'active'
+          crs_status: full.status || 'active',
+          crs_max_concurrent_tasks: Number.parseInt(full.maxConcurrentTasks, 10) || 0
         }
       })
     }

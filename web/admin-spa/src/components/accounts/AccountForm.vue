@@ -5762,6 +5762,7 @@ const createAccount = async () => {
       data.rateLimitDuration = 60 // 默认值60，不从用户输入获取
       data.dailyQuota = form.value.dailyQuota || 0
       data.quotaResetTime = form.value.quotaResetTime || '00:00'
+      data.maxConcurrentTasks = form.value.maxConcurrentTasks || 0
     } else if (form.value.platform === 'gemini-antigravity') {
       // Antigravity OAuth - set oauthProvider, submission happens below
       data.oauthProvider = 'antigravity'
@@ -6116,6 +6117,7 @@ const updateAccount = async () => {
       // 编辑时不上传 rateLimitDuration，保持原值
       data.dailyQuota = form.value.dailyQuota || 0
       data.quotaResetTime = form.value.quotaResetTime || '00:00'
+      data.maxConcurrentTasks = form.value.maxConcurrentTasks || 0
     }
 
     // Bedrock 特定更新

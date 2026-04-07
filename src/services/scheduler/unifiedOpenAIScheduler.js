@@ -156,6 +156,33 @@ class UnifiedOpenAIScheduler {
     return true
   }
 
+  async _getOpenAIResponsesConcurrencyStatus(account) {
+    const maxConcurrentTasks = Number.parseInt(account?.maxConcurrentTasks, 10) || 0
+    if (maxConcurrentTasks <= 0) {
+      return {
+        isFull: false,
+        currentConcurrency: 0,
+        maxConcurrentTasks: 0
+      }
+    }
+
+    const accountId = account?.id || account?.accountId
+    if (!accountId) {
+      return {
+        isFull: false,
+        currentConcurrency: 0,
+        maxConcurrentTasks
+      }
+    }
+
+    const currentConcurrency = await redis.getOpenAIResponsesAccountConcurrency(accountId)
+    return {
+      isFull: currentConcurrency >= maxConcurrentTasks,
+      currentConcurrency,
+      maxConcurrentTasks
+    }
+  }
+
   // 🎯 统一调度OpenAI账号
   async selectAccountForApiKey(
     apiKeyData,
@@ -268,6 +295,19 @@ class UnifiedOpenAIScheduler {
                 logger.warn(`⚠️ ${errorMsg}`)
                 const error = new Error(errorMsg)
                 error.statusCode = 403 // Forbidden - 订阅已过期
+                throw error
+              }
+
+              const concurrencyStatus =
+                await this._getOpenAIResponsesConcurrencyStatus(boundAccount)
+              if (concurrencyStatus.isFull) {
+                const errorMsg = `Dedicated account ${boundAccount.name} reached concurrency limit: ${concurrencyStatus.currentConcurrency}/${concurrencyStatus.maxConcurrentTasks}`
+                logger.warn(`⚠️ ${errorMsg}`)
+                const error = new Error(errorMsg)
+                error.code = 'OPENAI_RESPONSES_ACCOUNT_CONCURRENCY_FULL'
+                error.statusCode = 503
+                error.publicMessage =
+                  'The selected OpenAI-Responses account has reached its concurrency limit. Please try again later.'
                 throw error
               }
             }
@@ -590,6 +630,14 @@ class UnifiedOpenAIScheduler {
           continue
         }
 
+        const concurrencyStatus = await this._getOpenAIResponsesConcurrencyStatus(account)
+        if (concurrencyStatus.isFull) {
+          logger.debug(
+            `⏭️ Skipping OpenAI-Responses account ${account.name} - concurrency full ${concurrencyStatus.currentConcurrency}/${concurrencyStatus.maxConcurrentTasks}`
+          )
+          continue
+        }
+
         availableAccounts.push({
           ...account,
           accountId: account.id,
@@ -704,6 +752,14 @@ class UnifiedOpenAIScheduler {
           requestCapabilities
         )
         if (!compatibility.compatible) {
+          return false
+        }
+
+        const concurrencyStatus = await this._getOpenAIResponsesConcurrencyStatus(account)
+        if (concurrencyStatus.isFull) {
+          logger.info(
+            `🚫 OpenAI-Responses account ${accountId} reached concurrency limit: ${concurrencyStatus.currentConcurrency}/${concurrencyStatus.maxConcurrentTasks}`
+          )
           return false
         }
 
@@ -1062,6 +1118,16 @@ class UnifiedOpenAIScheduler {
               `⏭️ Skipping group member ${accountType} account ${account.name} - unsupported request features: ${compatibility.reasons.join(', ')}`
             )
             continue
+          }
+
+          if (accountType === 'openai-responses') {
+            const concurrencyStatus = await this._getOpenAIResponsesConcurrencyStatus(account)
+            if (concurrencyStatus.isFull) {
+              logger.debug(
+                `⏭️ Skipping group member ${accountType} account ${account.name} - concurrency full ${concurrencyStatus.currentConcurrency}/${concurrencyStatus.maxConcurrentTasks}`
+              )
+              continue
+            }
           }
 
           // 添加到可用账户列表

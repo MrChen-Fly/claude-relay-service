@@ -1,4 +1,5 @@
 const axios = require('axios')
+const { v4: uuidv4 } = require('uuid')
 const ProxyHelper = require('../../utils/proxyHelper')
 const logger = require('../../utils/logger')
 const { filterForOpenAI } = require('../../utils/headerFilter')
@@ -12,6 +13,7 @@ const upstreamErrorHelper = require('../../utils/upstreamErrorHelper')
 const { IncrementalSSEParser } = require('../../utils/sseParser')
 const ChatToResponsesConverter = require('../openaiProtocol/chatToResponsesConverter')
 const CodexToOpenAIConverter = require('../codexToOpenAI')
+const redis = require('../../models/redis')
 
 // lastUsedAt 更新节流（每账户 60 秒内最多更新一次，使用 LRU 防止内存泄漏）
 const lastUsedAtThrottle = new LRUCache(1000) // 最多缓存 1000 个账户
@@ -67,9 +69,78 @@ class OpenAIResponsesRelayService {
     })
   }
 
+  _getMaxConcurrentTasks(account) {
+    return Number.parseInt(account?.maxConcurrentTasks, 10) || 0
+  }
+
+  async _acquireConcurrencySlot(account, requestId, { isStream = false } = {}) {
+    const maxConcurrentTasks = this._getMaxConcurrentTasks(account)
+    if (maxConcurrentTasks <= 0) {
+      return false
+    }
+
+    const newConcurrency = Number(
+      await redis.incrOpenAIResponsesAccountConcurrency(account.id, requestId, 600)
+    )
+
+    if (newConcurrency > maxConcurrentTasks) {
+      await redis.decrOpenAIResponsesAccountConcurrency(account.id, requestId)
+      logger.warn(
+        `⚠️ OpenAI-Responses account ${account.name} (${account.id}) concurrency limit exceeded: ${newConcurrency}/${maxConcurrentTasks}${isStream ? ' (stream request)' : ''} (request: ${requestId}, rolled back)`
+      )
+
+      const error = new Error('OpenAI-Responses account concurrency limit reached')
+      error.code = 'OPENAI_RESPONSES_ACCOUNT_CONCURRENCY_FULL'
+      error.statusCode = 503
+      throw error
+    }
+
+    logger.debug(
+      `🔓 Acquired concurrency slot for OpenAI-Responses account ${account.name} (${account.id}), current: ${newConcurrency}/${maxConcurrentTasks}${isStream ? ' [stream]' : ''}, request: ${requestId}`
+    )
+
+    return true
+  }
+
+  async _releaseConcurrencySlot(accountId, requestId, { isStream = false } = {}) {
+    await redis.decrOpenAIResponsesAccountConcurrency(accountId, requestId)
+    logger.debug(
+      `🔓 Released concurrency slot for OpenAI-Responses account ${accountId}${isStream ? ' [stream]' : ''}, request: ${requestId}`
+    )
+  }
+
+  _startConcurrencyLeaseRefresh(account, requestId) {
+    const interval = setInterval(
+      async () => {
+        try {
+          await redis.refreshOpenAIResponsesAccountConcurrencyLease(account.id, requestId, 600)
+          logger.debug(
+            `🔄 Refreshed concurrency lease for OpenAI-Responses account ${account.name} (${account.id}), request: ${requestId}`
+          )
+        } catch (error) {
+          logger.error(
+            `❌ Failed to refresh concurrency lease for OpenAI-Responses account ${account.id}, request: ${requestId}:`,
+            error.message
+          )
+        }
+      },
+      5 * 60 * 1000
+    )
+
+    if (typeof interval.unref === 'function') {
+      interval.unref()
+    }
+
+    return interval
+  }
+
   // 处理请求转发
   async handleRequest(req, res, account, apiKeyData, options = {}) {
     let abortController = null
+    const requestId = uuidv4()
+    let concurrencyAcquired = false
+    let leaseRefreshInterval = null
+    let releaseConcurrencyInFinally = true
     const sessionId = req.headers['session_id'] || req.body?.session_id
     const sessionHash = sessionId
       ? crypto.createHash('sha256').update(sessionId).digest('hex')
@@ -94,6 +165,14 @@ class OpenAIResponsesRelayService {
       res.once('close', handleClientDisconnect)
 
       const attempts = this._buildAttempts(req, options)
+      const isStreamRequest = attempts.some((attempt) => !!attempt.body?.stream)
+      concurrencyAcquired = await this._acquireConcurrencySlot(fullAccount, requestId, {
+        isStream: isStreamRequest
+      })
+      if (concurrencyAcquired && isStreamRequest) {
+        leaseRefreshInterval = this._startConcurrencyLeaseRefresh(fullAccount, requestId)
+      }
+
       const headers = this._buildRequestHeaders(req, fullAccount)
       let response = null
       let selectedAttempt = attempts[0]
@@ -303,6 +382,7 @@ class OpenAIResponsesRelayService {
         response.data &&
         typeof response.data.pipe === 'function'
       ) {
+        releaseConcurrencyInFinally = false
         return this._handleStreamResponse(
           response,
           res,
@@ -311,7 +391,26 @@ class OpenAIResponsesRelayService {
           selectedAttempt.requestedModel || selectedAttempt.body?.model,
           handleClientDisconnect,
           req,
-          responseAdapter
+          responseAdapter,
+          async () => {
+            if (leaseRefreshInterval) {
+              clearInterval(leaseRefreshInterval)
+              leaseRefreshInterval = null
+            }
+
+            if (concurrencyAcquired) {
+              try {
+                await this._releaseConcurrencySlot(account.id, requestId, { isStream: true })
+              } catch (releaseError) {
+                logger.error(
+                  `❌ Failed to release concurrency slot for OpenAI-Responses stream account ${account.id}, request: ${requestId}:`,
+                  releaseError.message
+                )
+              } finally {
+                concurrencyAcquired = false
+              }
+            }
+          }
         )
       }
 
@@ -336,6 +435,17 @@ class OpenAIResponsesRelayService {
         statusText: error.response?.statusText
       }
       logger.error('OpenAI-Responses relay error:', errorInfo)
+
+      if (error.code === 'OPENAI_RESPONSES_ACCOUNT_CONCURRENCY_FULL') {
+        return res.status(error.statusCode || 503).json({
+          error: {
+            message:
+              'The selected OpenAI-Responses account has reached its concurrency limit. Please try again later.',
+            type: 'account_concurrency_limit',
+            code: 'account_concurrency_limit'
+          }
+        })
+      }
 
       if (error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT') {
         if (account?.id) {
@@ -429,6 +539,24 @@ class OpenAIResponsesRelayService {
           details: error.message
         }
       })
+    } finally {
+      if (releaseConcurrencyInFinally) {
+        if (leaseRefreshInterval) {
+          clearInterval(leaseRefreshInterval)
+          leaseRefreshInterval = null
+        }
+
+        if (concurrencyAcquired) {
+          try {
+            await this._releaseConcurrencySlot(account.id, requestId)
+          } catch (releaseError) {
+            logger.error(
+              `❌ Failed to release concurrency slot for OpenAI-Responses account ${account?.id}, request: ${requestId}:`,
+              releaseError.message
+            )
+          }
+        }
+      }
     }
   }
 
@@ -612,7 +740,8 @@ class OpenAIResponsesRelayService {
     requestedModel,
     handleClientDisconnect,
     req,
-    responseAdapter = null
+    responseAdapter = null,
+    onStreamFinished = null
   ) {
     res.setHeader('Content-Type', 'text/event-stream')
     res.setHeader('Cache-Control', 'no-cache')
@@ -624,7 +753,26 @@ class OpenAIResponsesRelayService {
     let rateLimitDetected = false
     let rateLimitResetsInSeconds = null
     let streamEnded = false
+    let streamFinished = false
     const parser = new IncrementalSSEParser()
+
+    const finalizeStream = async () => {
+      if (streamFinished) {
+        return
+      }
+
+      streamFinished = true
+      req.removeListener('close', cleanup)
+      req.removeListener('aborted', cleanup)
+
+      if (typeof onStreamFinished === 'function') {
+        try {
+          await onStreamFinished()
+        } catch (error) {
+          logger.error('Failed to finalize OpenAI-Responses stream cleanup:', error)
+        }
+      }
+    }
 
     const captureUsage = (eventData) => {
       if (!eventData || typeof eventData !== 'object') {
@@ -782,6 +930,7 @@ class OpenAIResponsesRelayService {
 
       req.removeListener('close', handleClientDisconnect)
       res.removeListener('close', handleClientDisconnect)
+      await finalizeStream()
 
       if (!res.destroyed) {
         res.end()
@@ -794,12 +943,13 @@ class OpenAIResponsesRelayService {
       })
     })
 
-    response.data.on('error', (error) => {
+    response.data.on('error', async (error) => {
       streamEnded = true
       logger.error('Stream error:', error)
 
       req.removeListener('close', handleClientDisconnect)
       res.removeListener('close', handleClientDisconnect)
+      await finalizeStream()
 
       if (!res.headersSent) {
         res.status(502).json({ error: { message: 'Upstream stream error' } })
@@ -810,12 +960,15 @@ class OpenAIResponsesRelayService {
 
     const cleanup = () => {
       streamEnded = true
+      req.removeListener('close', handleClientDisconnect)
+      res.removeListener('close', handleClientDisconnect)
       try {
         response.data?.unpipe?.(res)
         response.data?.destroy?.()
       } catch (_) {
         // ignore cleanup errors
       }
+      void finalizeStream()
     }
 
     req.on('close', cleanup)
@@ -893,14 +1046,14 @@ class OpenAIResponsesRelayService {
       }
     }
 
-    return res.status(response.status).json(clientPayload)
-
     logger.info('Normal response completed', {
       accountId: account.id,
       status: response.status,
       hasUsage: !!usageData,
       model: actualModel
     })
+
+    return res.status(response.status).json(clientPayload)
   }
 
   async _handle429Error(account, response, isStream = false, sessionHash = null) {

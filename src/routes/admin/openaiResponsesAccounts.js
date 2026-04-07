@@ -22,6 +22,19 @@ const { getProxyAgent } = require('../../utils/proxyHelper')
 
 const router = express.Router()
 
+function normalizeMaxConcurrentTasks(value) {
+  if (value === undefined || value === null || value === '') {
+    return null
+  }
+
+  const concurrent = Number(value)
+  if (!Number.isInteger(concurrent) || concurrent < 0) {
+    return { error: 'maxConcurrentTasks must be a non-negative integer' }
+  }
+
+  return concurrent
+}
+
 // ==================== OpenAI-Responses 账户管理 API ====================
 
 // 获取所有 OpenAI-Responses 账户
@@ -149,6 +162,18 @@ router.get('/openai-responses-accounts', authenticateAdmin, async (req, res) => 
 router.post('/openai-responses-accounts', authenticateAdmin, async (req, res) => {
   try {
     const accountData = req.body
+    const normalizedMaxConcurrentTasks = normalizeMaxConcurrentTasks(accountData.maxConcurrentTasks)
+
+    if (normalizedMaxConcurrentTasks?.error) {
+      return res.status(400).json({
+        success: false,
+        error: normalizedMaxConcurrentTasks.error
+      })
+    }
+
+    if (normalizedMaxConcurrentTasks !== null) {
+      accountData.maxConcurrentTasks = normalizedMaxConcurrentTasks
+    }
 
     // 验证分组类型
     if (
@@ -220,6 +245,19 @@ router.put('/openai-responses-accounts/:id', authenticateAdmin, async (req, res)
         })
       }
       mappedUpdates.priority = priority.toString()
+    }
+
+    const normalizedMaxConcurrentTasks = normalizeMaxConcurrentTasks(
+      mappedUpdates.maxConcurrentTasks
+    )
+    if (normalizedMaxConcurrentTasks?.error) {
+      return res.status(400).json({
+        success: false,
+        error: normalizedMaxConcurrentTasks.error
+      })
+    }
+    if (normalizedMaxConcurrentTasks !== null) {
+      mappedUpdates.maxConcurrentTasks = normalizedMaxConcurrentTasks
     }
 
     // 处理分组变更

@@ -30,7 +30,8 @@ jest.mock('../src/services/accountGroupService', () => ({
 }))
 
 jest.mock('../src/models/redis', () => ({
-  getClientSafe: jest.fn()
+  getClientSafe: jest.fn(),
+  getOpenAIResponsesAccountConcurrency: jest.fn().mockResolvedValue(0)
 }))
 
 jest.mock('../src/utils/logger', () => ({
@@ -50,6 +51,7 @@ jest.mock('../src/utils/upstreamErrorHelper', () => ({
 }))
 
 const openaiResponsesAccountService = require('../src/services/account/openaiResponsesAccountService')
+const redis = require('../src/models/redis')
 const scheduler = require('../src/services/scheduler/unifiedOpenAIScheduler')
 
 describe('unifiedOpenAIScheduler capability filtering', () => {
@@ -69,6 +71,7 @@ describe('unifiedOpenAIScheduler capability filtering', () => {
     ])
     openaiResponsesAccountService.checkAndClearRateLimit.mockResolvedValue(true)
     openaiResponsesAccountService.isSubscriptionExpired.mockReturnValue(false)
+    redis.getOpenAIResponsesAccountConcurrency.mockResolvedValue(0)
   })
 
   it('skips completions-only accounts for json_schema requests by default', async () => {
@@ -145,5 +148,42 @@ describe('unifiedOpenAIScheduler capability filtering', () => {
       },
       'gpt-5'
     )
+  })
+
+  it('rejects dedicated openai-responses accounts when account concurrency is full', async () => {
+    openaiResponsesAccountService.getAccount.mockResolvedValue({
+      id: 'responses-dedicated-1',
+      name: 'Mimo Dedicated',
+      isActive: true,
+      status: 'active',
+      schedulable: true,
+      maxConcurrentTasks: 1,
+      providerEndpoint: 'completions',
+      modelMapping: {
+        'gpt-5': 'codex-0.80'
+      }
+    })
+    redis.getOpenAIResponsesAccountConcurrency.mockResolvedValue(1)
+
+    await expect(
+      scheduler.selectAccountForApiKey(
+        {
+          id: 'key-dedicated-1',
+          name: 'Dedicated Key',
+          openaiAccountId: 'responses:responses-dedicated-1'
+        },
+        null,
+        'gpt-5',
+        {
+          needsStreaming: false,
+          needsTools: false,
+          needsReasoning: false,
+          needsJsonSchema: false
+        }
+      )
+    ).rejects.toMatchObject({
+      code: 'OPENAI_RESPONSES_ACCOUNT_CONCURRENCY_FULL',
+      statusCode: 503
+    })
   })
 })
