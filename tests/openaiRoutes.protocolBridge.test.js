@@ -69,7 +69,8 @@ describe('openaiRoutes protocol bridge', () => {
         model: 'mimo-v2-pro',
         instructions:
           "You are Codex, based on GPT-5. You are running as a coding agent in the Codex CLI on a user's computer.",
-        stream: false
+        stream: false,
+        prompt_cache_retention: { type: 'ephemeral', ttl_seconds: 86400 }
       },
       _openaiAuthContext: {
         accountType: 'openai-responses',
@@ -93,6 +94,7 @@ describe('openaiRoutes protocol bridge', () => {
       'mimo-v2-pro',
       { providerEndpoint: 'completions' }
     )
+    expect(req.body.prompt_cache_retention).toEqual({ type: 'ephemeral', ttl_seconds: 86400 })
   })
 
   it('returns the scheduler public message when no compatible account is available', async () => {

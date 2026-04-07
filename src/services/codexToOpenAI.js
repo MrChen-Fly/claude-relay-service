@@ -528,6 +528,9 @@ class CodexToOpenAIConverter {
     if (chatBody.prompt_cache_key) {
       result.prompt_cache_key = chatBody.prompt_cache_key
     }
+    if (chatBody.prompt_cache_retention) {
+      result.prompt_cache_retention = chatBody.prompt_cache_retention
+    }
 
     return result
   }

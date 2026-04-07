@@ -141,7 +141,8 @@ class ResponsesToChatConverter {
       'metadata',
       'session_id',
       'conversation_id',
-      'prompt_cache_key'
+      'prompt_cache_key',
+      'prompt_cache_retention'
     ]
 
     for (const field of passthroughFields) {

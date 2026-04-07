@@ -26,6 +26,7 @@ describe('openaiProtocol bridge service', () => {
           }
         ],
         stream: false,
+        prompt_cache_retention: { type: 'ephemeral', ttl_seconds: 86400 },
         reasoning: {
           effort: 'medium'
         }
@@ -54,7 +55,8 @@ describe('openaiProtocol bridge service', () => {
             body: expect.objectContaining({
               model: 'mimo-v2-pro',
               stream: false,
-              reasoning_effort: 'medium'
+              reasoning_effort: 'medium',
+              prompt_cache_retention: { type: 'ephemeral', ttl_seconds: 86400 }
             }),
             transform: 'chat_to_responses',
             requestedModel: 'mimo-v2-pro'
@@ -84,7 +86,9 @@ describe('openaiProtocol bridge service', () => {
       body: {
         model: 'gpt-5',
         messages: [{ role: 'user', content: 'hello' }],
-        stream: true
+        stream: true,
+        prompt_cache_key: 'session-cache-key',
+        prompt_cache_retention: { type: 'ephemeral', ttl_seconds: 86400 }
       }
     }
 
@@ -113,7 +117,9 @@ describe('openaiProtocol bridge service', () => {
             body: expect.objectContaining({
               model: 'gpt-5',
               stream: true,
-              instructions: 'codex instructions'
+              instructions: 'codex instructions',
+              prompt_cache_key: 'session-cache-key',
+              prompt_cache_retention: { type: 'ephemeral', ttl_seconds: 86400 }
             }),
             transform: 'responses_to_chat',
             requestedModel: 'gpt-5'
