@@ -27,6 +27,25 @@ describe('openaiProtocol bridge service', () => {
         ],
         stream: false,
         prompt_cache_retention: { type: 'ephemeral', ttl_seconds: 86400 },
+        tools: [
+          {
+            type: 'function',
+            name: 'search',
+            description: 'Search project docs',
+            parameters: {
+              type: 'object',
+              properties: {
+                q: { type: 'string' }
+              },
+              required: ['q']
+            },
+            strict: true
+          }
+        ],
+        tool_choice: {
+          type: 'function',
+          name: 'search'
+        },
         reasoning: {
           effort: 'medium'
         }
@@ -76,6 +95,27 @@ describe('openaiProtocol bridge service', () => {
       { role: 'system', content: 'Follow repository rules.' },
       { role: 'user', content: 'Say OK.' }
     ])
+    expect(chatBody.tools).toEqual([
+      {
+        type: 'function',
+        function: {
+          name: 'search',
+          description: 'Search project docs',
+          parameters: {
+            type: 'object',
+            properties: {
+              q: { type: 'string' }
+            },
+            required: ['q']
+          },
+          strict: true
+        }
+      }
+    ])
+    expect(chatBody.tool_choice).toEqual({
+      type: 'function',
+      function: { name: 'search' }
+    })
   })
 
   it('prefers responses upstream for chat clients when the account hint is responses', async () => {

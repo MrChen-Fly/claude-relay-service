@@ -38,18 +38,31 @@ function extractTextContent(content) {
 }
 
 function convertTool(tool) {
-  if (!tool || tool.type !== 'function' || !tool.function) {
+  if (!tool || tool.type !== 'function') {
     return tool
   }
 
-  return {
+  const functionDefinition =
+    tool.function && typeof tool.function === 'object' ? tool.function : tool
+
+  if (!functionDefinition.name) {
+    return tool
+  }
+
+  const convertedTool = {
     type: 'function',
     function: {
-      name: tool.function.name,
-      description: tool.function.description,
-      parameters: tool.function.parameters || tool.function.input_schema || {}
+      name: functionDefinition.name,
+      description: functionDefinition.description,
+      parameters: functionDefinition.parameters || functionDefinition.input_schema || {}
     }
   }
+
+  if (functionDefinition.strict !== undefined) {
+    convertedTool.function.strict = functionDefinition.strict
+  }
+
+  return convertedTool
 }
 
 function convertToolChoice(toolChoice) {
