@@ -1708,12 +1708,100 @@
                   class="form-input w-full border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200"
                 >
                   <option value="responses">Responses（推荐）</option>
+                  <option value="completions">Chat Completions</option>
                   <option value="auto">自动（保持原始路径）</option>
                 </select>
                 <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                  指定 Provider 支持的端点类型。Responses 会将所有请求路由到（包括来自
-                  /v1/chat/completions 的请求会自动转换）；自动则保持客户端请求的原始路径
+                  指定 Provider 支持的端点类型。Responses 会将 chat 请求转换后转到
+                  /v1/responses；Chat Completions 会直连
+                  /v1/chat/completions；自动则保持客户端请求的原始路径
                 </p>
+              </div>
+
+              <div class="rounded-xl border border-gray-200 p-4 dark:border-gray-700">
+                <label class="mb-3 block text-sm font-semibold text-gray-700 dark:text-gray-300"
+                  >能力覆盖（可选）</label
+                >
+                <p class="mb-4 text-xs text-gray-500 dark:text-gray-400">
+                  默认按 Provider 端点类型自动推断。仅当上游实际能力与默认值不一致时，再手动覆盖。
+                </p>
+                <div class="grid gap-4 md:grid-cols-2">
+                  <div
+                    v-for="capability in capabilityOverrideFields"
+                    :key="`create-${capability.key}`"
+                  >
+                    <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                      {{ capability.label }}
+                    </label>
+                    <select
+                      v-model="form[capability.key]"
+                      class="form-input w-full border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200"
+                    >
+                      <option
+                        v-for="option in capabilityOverrideOptions"
+                        :key="`${capability.key}-${option.value || 'auto'}`"
+                        :value="option.value"
+                      >
+                        {{ option.label }}
+                      </option>
+                    </select>
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      {{ capability.description }}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div class="rounded-xl border border-gray-200 p-4 dark:border-gray-700">
+                <label class="mb-3 block text-sm font-semibold text-gray-700 dark:text-gray-300"
+                  >模型映射（可选）</label
+                >
+                <p class="mb-4 text-xs text-gray-500 dark:text-gray-400">
+                  按账户配置客户端模型到上游模型的映射，替代公共“转发规则”。留空表示不做映射。
+                </p>
+                <p class="mb-4 text-xs text-gray-500 dark:text-gray-400">
+                  例如：客户端填
+                  <code class="rounded bg-gray-100 px-1 dark:bg-gray-700">gpt-5</code>，上游填
+                  <code class="rounded bg-gray-100 px-1 dark:bg-gray-700">codex-0.80</code>。
+                </p>
+
+                <div class="space-y-2">
+                  <div
+                    v-for="(mapping, index) in openaiResponsesModelMappings"
+                    :key="`openai-responses-create-${index}`"
+                    class="flex items-center gap-2"
+                  >
+                    <input
+                      v-model="mapping.from"
+                      class="form-input flex-1 border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200"
+                      placeholder="客户端模型，例如：gpt-5"
+                      type="text"
+                    />
+                    <i class="fas fa-arrow-right text-gray-400 dark:text-gray-500" />
+                    <input
+                      v-model="mapping.to"
+                      class="form-input flex-1 border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200"
+                      placeholder="上游模型，例如：codex-0.80"
+                      type="text"
+                    />
+                    <button
+                      class="rounded-lg p-2 text-red-500 transition-colors hover:bg-red-50 dark:hover:bg-red-900/20"
+                      type="button"
+                      @click="removeOpenAIResponsesModelMapping(index)"
+                    >
+                      <i class="fas fa-trash" />
+                    </button>
+                  </div>
+                </div>
+
+                <button
+                  class="mt-3 w-full rounded-lg border-2 border-dashed border-gray-300 px-4 py-2 text-gray-600 transition-colors hover:border-gray-400 hover:text-gray-700 dark:border-gray-600 dark:text-gray-400 dark:hover:border-gray-500"
+                  type="button"
+                  @click="addOpenAIResponsesModelMapping"
+                >
+                  <i class="fas fa-plus mr-2" />
+                  添加模型映射
+                </button>
               </div>
 
               <!-- 限流时长字段 - 隐藏不显示，使用默认值60 -->
@@ -3484,9 +3572,92 @@
                 <option value="auto">自动（保持原始路径）</option>
               </select>
               <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                指定 Provider 支持的端点类型。Responses 会将所有请求路由到（包括来自
-                /v1/chat/completions 的请求会自动转换）；自动则保持原始路径
+                指定 Provider 支持的端点类型。Responses 会将 chat 请求转换后转到 /v1/responses；Chat
+                Completions 会直连 /v1/chat/completions；自动则保持原始路径
               </p>
+            </div>
+
+            <div class="rounded-xl border border-gray-200 p-4 dark:border-gray-700">
+              <label class="mb-3 block text-sm font-semibold text-gray-700 dark:text-gray-300"
+                >能力覆盖（可选）</label
+              >
+              <p class="mb-4 text-xs text-gray-500 dark:text-gray-400">
+                默认按 Provider 端点类型自动推断。设置后会直接影响调度器对该账户的能力匹配。
+              </p>
+              <div class="grid gap-4 md:grid-cols-2">
+                <div v-for="capability in capabilityOverrideFields" :key="`edit-${capability.key}`">
+                  <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ capability.label }}
+                  </label>
+                  <select
+                    v-model="form[capability.key]"
+                    class="form-input w-full border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200"
+                  >
+                    <option
+                      v-for="option in capabilityOverrideOptions"
+                      :key="`${capability.key}-${option.value || 'auto'}`"
+                      :value="option.value"
+                    >
+                      {{ option.label }}
+                    </option>
+                  </select>
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    {{ capability.description }}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div class="rounded-xl border border-gray-200 p-4 dark:border-gray-700">
+              <label class="mb-3 block text-sm font-semibold text-gray-700 dark:text-gray-300"
+                >模型映射（可选）</label
+              >
+              <p class="mb-4 text-xs text-gray-500 dark:text-gray-400">
+                按账户配置客户端模型到上游模型的映射，替代公共“转发规则”。留空表示不做映射。
+              </p>
+              <p class="mb-4 text-xs text-gray-500 dark:text-gray-400">
+                例如：客户端填
+                <code class="rounded bg-gray-100 px-1 dark:bg-gray-700">gpt-5</code>，上游填
+                <code class="rounded bg-gray-100 px-1 dark:bg-gray-700">codex-0.80</code>。
+              </p>
+
+              <div class="space-y-2">
+                <div
+                  v-for="(mapping, index) in openaiResponsesModelMappings"
+                  :key="`openai-responses-edit-${index}`"
+                  class="flex items-center gap-2"
+                >
+                  <input
+                    v-model="mapping.from"
+                    class="form-input flex-1 border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200"
+                    placeholder="客户端模型，例如：gpt-5"
+                    type="text"
+                  />
+                  <i class="fas fa-arrow-right text-gray-400 dark:text-gray-500" />
+                  <input
+                    v-model="mapping.to"
+                    class="form-input flex-1 border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200"
+                    placeholder="上游模型，例如：codex-0.80"
+                    type="text"
+                  />
+                  <button
+                    class="rounded-lg p-2 text-red-500 transition-colors hover:bg-red-50 dark:hover:bg-red-900/20"
+                    type="button"
+                    @click="removeOpenAIResponsesModelMapping(index)"
+                  >
+                    <i class="fas fa-trash" />
+                  </button>
+                </div>
+              </div>
+
+              <button
+                class="mt-3 w-full rounded-lg border-2 border-dashed border-gray-300 px-4 py-2 text-gray-600 transition-colors hover:border-gray-400 hover:text-gray-700 dark:border-gray-600 dark:text-gray-400 dark:hover:border-gray-500"
+                type="button"
+                @click="addOpenAIResponsesModelMapping"
+              >
+                <i class="fas fa-plus mr-2" />
+                添加模型映射
+              </button>
             </div>
 
             <!-- 限流时长字段 - 隐藏不显示，保持原值 -->
@@ -4305,6 +4476,48 @@ const normalizeAccountCooldownOverride = (value) => {
 }
 
 const toFormBoolean = (value) => value === true || value === 'true'
+const capabilityOverrideOptions = [
+  { value: '', label: '自动（按端点默认值）' },
+  { value: 'true', label: '强制支持' },
+  { value: 'false', label: '强制不支持' }
+]
+const capabilityOverrideFields = [
+  {
+    key: 'supportsStreaming',
+    label: '流式输出',
+    description: '控制 stream=true 请求是否允许调度到该账户。'
+  },
+  {
+    key: 'supportsTools',
+    label: '工具调用',
+    description: '控制包含 tools 或 tool_choice 的请求是否允许使用该账户。'
+  },
+  {
+    key: 'supportsReasoning',
+    label: '推理参数',
+    description: '控制包含 reasoning 或 reasoning_effort 的请求是否允许使用该账户。'
+  },
+  {
+    key: 'supportsJsonSchema',
+    label: 'JSON Schema',
+    description: '控制严格结构化输出或 json_schema 请求是否允许使用该账户。'
+  }
+]
+const toCapabilityFormValue = (value) => {
+  if (value === true || value === 'true') return 'true'
+  if (value === false || value === 'false') return 'false'
+  return ''
+}
+const normalizeCapabilityOverride = (value) => {
+  if (value === true || value === 'true') return true
+  if (value === false || value === 'false') return false
+  return ''
+}
+const applyCapabilityOverridesToPayload = (target, source) => {
+  capabilityOverrideFields.forEach(({ key }) => {
+    target[key] = normalizeCapabilityOverride(source[key])
+  })
+}
 
 // 表单数据
 const form = ref({
@@ -4344,6 +4557,10 @@ const form = ref({
   // OpenAI-Responses 特定字段
   baseApi: props.account?.baseApi || '',
   providerEndpoint: props.account?.providerEndpoint || 'responses',
+  supportsStreaming: toCapabilityFormValue(props.account?.supportsStreaming),
+  supportsTools: toCapabilityFormValue(props.account?.supportsTools),
+  supportsReasoning: toCapabilityFormValue(props.account?.supportsReasoning),
+  supportsJsonSchema: toCapabilityFormValue(props.account?.supportsJsonSchema),
   // Gemini-API 特定字段
   baseUrl: props.account?.baseUrl || 'https://generativelanguage.googleapis.com',
   rateLimitDuration: props.account?.rateLimitDuration || 60,
@@ -4444,6 +4661,7 @@ const loadCommonModels = async () => {
 
 // 模型映射表数据
 const modelMappings = ref([])
+const openaiResponsesModelMappings = ref([])
 
 // 初始化模型映射表
 const initModelMappings = () => {
@@ -4481,6 +4699,21 @@ const initModelMappings = () => {
       }))
     }
   }
+}
+
+const initOpenAIResponsesModelMappings = () => {
+  const rawMapping = props.account?.modelMapping || props.account?.supportedModels
+  if (!rawMapping || typeof rawMapping !== 'object' || Array.isArray(rawMapping)) {
+    openaiResponsesModelMappings.value = []
+    return
+  }
+
+  openaiResponsesModelMappings.value = Object.entries(rawMapping)
+    .filter(([from, to]) => String(from || '').trim() && String(to || '').trim())
+    .map(([from, to]) => ({
+      from: String(from).trim(),
+      to: String(to).trim()
+    }))
 }
 
 // 解析多行 API Key 输入
@@ -5523,6 +5756,8 @@ const createAccount = async () => {
       data.apiKey = form.value.apiKey
       data.userAgent = form.value.userAgent || ''
       data.providerEndpoint = form.value.providerEndpoint || 'responses'
+      data.modelMapping = convertOpenAIResponsesMappingsToObject() || {}
+      applyCapabilityOverridesToPayload(data, form.value)
       data.priority = form.value.priority || 50
       data.rateLimitDuration = 60 // 默认值60，不从用户输入获取
       data.dailyQuota = form.value.dailyQuota || 0
@@ -5875,6 +6110,8 @@ const updateAccount = async () => {
       }
       data.userAgent = form.value.userAgent || ''
       data.providerEndpoint = form.value.providerEndpoint || 'responses'
+      data.modelMapping = convertOpenAIResponsesMappingsToObject() || {}
+      applyCapabilityOverridesToPayload(data, form.value)
       data.priority = form.value.priority || 50
       // 编辑时不上传 rateLimitDuration，保持原值
       data.dailyQuota = form.value.dailyQuota || 0
@@ -6183,6 +6420,10 @@ watch(
       form.value.groupId = ''
       form.value.groupIds = []
     }
+
+    if (!isEdit.value && newPlatform === 'openai-responses') {
+      openaiResponsesModelMappings.value = []
+    }
   }
 )
 
@@ -6396,12 +6637,35 @@ const convertMappingsToObject = () => {
   return Object.keys(mapping).length > 0 ? mapping : null
 }
 
+const addOpenAIResponsesModelMapping = () => {
+  openaiResponsesModelMappings.value.push({ from: '', to: '' })
+}
+
+const removeOpenAIResponsesModelMapping = (index) => {
+  openaiResponsesModelMappings.value.splice(index, 1)
+}
+
+const convertOpenAIResponsesMappingsToObject = () => {
+  const mapping = {}
+
+  openaiResponsesModelMappings.value.forEach((item) => {
+    const from = String(item.from || '').trim()
+    const to = String(item.to || '').trim()
+    if (from && to) {
+      mapping[from] = to
+    }
+  })
+
+  return Object.keys(mapping).length > 0 ? mapping : null
+}
+
 // 监听账户变化，更新表单
 watch(
   () => props.account,
   (newAccount) => {
     if (newAccount) {
       initModelMappings()
+      initOpenAIResponsesModelMappings()
       // 重新初始化代理配置
       const proxyConfig = normalizeProxyFormState(newAccount.proxy)
       const normalizedAuthMethod =
@@ -6498,6 +6762,10 @@ watch(
         // OpenAI-Responses 特定字段
         baseApi: newAccount.baseApi || '',
         providerEndpoint: newAccount.providerEndpoint || 'responses',
+        supportsStreaming: toCapabilityFormValue(newAccount.supportsStreaming),
+        supportsTools: toCapabilityFormValue(newAccount.supportsTools),
+        supportsReasoning: toCapabilityFormValue(newAccount.supportsReasoning),
+        supportsJsonSchema: toCapabilityFormValue(newAccount.supportsJsonSchema),
         // Gemini-API 特定字段
         baseUrl: newAccount.baseUrl || 'https://generativelanguage.googleapis.com',
         // 额度管理字段
@@ -6711,6 +6979,7 @@ onMounted(() => {
   // 初始化模型映射表（如果是编辑模式）
   if (isEdit.value) {
     initModelMappings()
+    initOpenAIResponsesModelMappings()
   }
 
   // 加载模型列表

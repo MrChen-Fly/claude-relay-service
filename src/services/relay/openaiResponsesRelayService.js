@@ -5,11 +5,13 @@ const { filterForOpenAI } = require('../../utils/headerFilter')
 const openaiResponsesAccountService = require('../account/openaiResponsesAccountService')
 const apiKeyService = require('../apiKeyService')
 const unifiedOpenAIScheduler = require('../scheduler/unifiedOpenAIScheduler')
-const forwardingRuleService = require('../forwardingRuleService')
 const config = require('../../../config/config')
 const crypto = require('crypto')
 const LRUCache = require('../../utils/lruCache')
 const upstreamErrorHelper = require('../../utils/upstreamErrorHelper')
+const { IncrementalSSEParser } = require('../../utils/sseParser')
+const ChatToResponsesConverter = require('../openaiProtocol/chatToResponsesConverter')
+const CodexToOpenAIConverter = require('../codexToOpenAI')
 
 // lastUsedAt 更新节流（每账户 60 秒内最多更新一次，使用 LRU 防止内存泄漏）
 const lastUsedAtThrottle = new LRUCache(1000) // 最多缓存 1000 个账户
@@ -41,6 +43,10 @@ function extractCacheCreationTokens(usageData) {
   return 0
 }
 
+function toSSE(event) {
+  return `data: ${JSON.stringify(event)}\n\n`
+}
+
 class OpenAIResponsesRelayService {
   constructor() {
     this.defaultTimeout = config.requestTimeout || 600000
@@ -62,131 +68,123 @@ class OpenAIResponsesRelayService {
   }
 
   // 处理请求转发
-  async handleRequest(req, res, account, apiKeyData) {
+  async handleRequest(req, res, account, apiKeyData, options = {}) {
     let abortController = null
-    // 获取会话哈希（如果有的话）
     const sessionId = req.headers['session_id'] || req.body?.session_id
     const sessionHash = sessionId
       ? crypto.createHash('sha256').update(sessionId).digest('hex')
       : null
 
     try {
-      // 获取完整的账户信息（包含解密的 API Key）
       const fullAccount = await openaiResponsesAccountService.getAccount(account.id)
       if (!fullAccount) {
         throw new Error('Account not found')
       }
 
-      await forwardingRuleService.rewriteRequestModel({
-        requestBody: req.body,
-        platform: 'openai-responses',
-        accountId: account.id
-      })
-
-      // 创建 AbortController 用于取消请求
       abortController = new AbortController()
 
-      // 设置客户端断开监听器
       const handleClientDisconnect = () => {
-        logger.info('🔌 Client disconnected, aborting OpenAI-Responses request')
+        logger.info('Client disconnected, aborting OpenAI-Responses request')
         if (abortController && !abortController.signal.aborted) {
           abortController.abort()
         }
       }
 
-      // 监听客户端断开事件
       req.once('close', handleClientDisconnect)
       res.once('close', handleClientDisconnect)
 
-      // 构建目标 URL（根据 providerEndpoint 配置决定端点路径）
-      const providerEndpoint = fullAccount.providerEndpoint || 'responses'
-      let targetPath = req.path
+      const attempts = this._buildAttempts(req, options)
+      const headers = this._buildRequestHeaders(req, fullAccount)
+      let response = null
+      let selectedAttempt = attempts[0]
 
-      // 根据 providerEndpoint 配置归一化路径
-      // 注意：unified.js 已将 /v1/chat/completions 的请求体转换为 Responses 格式，
-      // 因此这里只需归一化路径即可；反向 responses→completions 需要同时转换请求体，
-      // 目前不支持，所以只保留 responses 和 auto 两种模式
-      if (
-        providerEndpoint === 'responses' &&
-        (targetPath === '/v1/chat/completions' || targetPath === '/chat/completions')
-      ) {
-        const newPath = targetPath.startsWith('/v1') ? '/v1/responses' : '/responses'
-        logger.info(`📝 Normalized path (${req.path}) → ${newPath} (providerEndpoint=responses)`)
-        targetPath = newPath
-      }
-      // providerEndpoint === 'auto' 时保持原始路径不变
-
-      // 防止 baseApi 已含 /v1 时路径重复（如 baseApi=http://host/v1 + targetPath=/v1/responses → /v1/v1/responses）
-      const baseApi = fullAccount.baseApi || ''
-      if (baseApi.endsWith('/v1') && targetPath.startsWith('/v1/')) {
-        targetPath = targetPath.slice(3) // '/v1/responses' → '/responses'
-      }
-      const targetUrl = `${baseApi}${targetPath}`
-      logger.info(`🎯 Forwarding to: ${targetUrl}`)
-
-      // 构建请求头 - 使用统一的 headerFilter 移除 CDN headers
-      const headers = {
-        ...filterForOpenAI(req.headers),
-        Authorization: `Bearer ${fullAccount.apiKey}`,
-        'Content-Type': 'application/json'
-      }
-
-      // 处理 User-Agent
-      if (fullAccount.userAgent) {
-        // 使用自定义 User-Agent
-        headers['User-Agent'] = fullAccount.userAgent
-        logger.debug(`📱 Using custom User-Agent: ${fullAccount.userAgent}`)
-      } else if (req.headers['user-agent']) {
-        // 透传原始 User-Agent
-        headers['User-Agent'] = req.headers['user-agent']
-        logger.debug(`📱 Forwarding original User-Agent: ${req.headers['user-agent']}`)
-      }
-
-      // 配置请求选项
-      const requestOptions = {
-        method: req.method,
-        url: targetUrl,
-        headers,
-        data: req.body,
-        timeout: this.defaultTimeout,
-        responseType: req.body?.stream ? 'stream' : 'json',
-        validateStatus: () => true, // 允许处理所有状态码
-        signal: abortController.signal
-      }
-
-      // 配置代理（如果有）
-      if (fullAccount.proxy) {
-        const proxyAgent = ProxyHelper.createProxyAgent(fullAccount.proxy)
-        if (proxyAgent) {
-          requestOptions.httpAgent = proxyAgent
-          requestOptions.httpsAgent = proxyAgent
-          requestOptions.proxy = false
-          logger.info(
-            `🌐 Using proxy for OpenAI-Responses: ${ProxyHelper.getProxyDescription(fullAccount.proxy)}`
-          )
+      for (let index = 0; index < attempts.length; index += 1) {
+        const attempt = attempts[index]
+        const requestedModel = attempt.requestedModel || attempt.body?.model || null
+        const resolvedModel = openaiResponsesAccountService.getMappedModel(
+          fullAccount.modelMapping || fullAccount.supportedModels,
+          requestedModel
+        )
+        if (attempt.body?.model && resolvedModel !== attempt.body.model) {
+          logger.info('Applying OpenAI-Responses account model mapping', {
+            accountId: account.id,
+            accountName: account.name,
+            requestedModel,
+            resolvedModel
+          })
         }
+        if (attempt.body && typeof attempt.body === 'object' && resolvedModel) {
+          attempt.body.model = resolvedModel
+        }
+
+        const targetPath = this._normalizeTargetPath(fullAccount.baseApi || '', attempt.path)
+        const targetUrl = `${fullAccount.baseApi || ''}${targetPath}`
+        const requestOptions = {
+          method: req.method,
+          url: targetUrl,
+          headers,
+          data: attempt.body,
+          timeout: this.defaultTimeout,
+          responseType: attempt.body?.stream ? 'stream' : 'json',
+          validateStatus: () => true,
+          signal: abortController.signal
+        }
+
+        if (fullAccount.proxy) {
+          const proxyAgent = ProxyHelper.createProxyAgent(fullAccount.proxy)
+          if (proxyAgent) {
+            requestOptions.httpAgent = proxyAgent
+            requestOptions.httpsAgent = proxyAgent
+            requestOptions.proxy = false
+            logger.info(
+              `Using proxy for OpenAI-Responses: ${ProxyHelper.getProxyDescription(fullAccount.proxy)}`
+            )
+          }
+        }
+
+        logger.info('OpenAI-Responses relay request', {
+          accountId: account.id,
+          accountName: account.name,
+          targetUrl,
+          method: req.method,
+          stream: attempt.body?.stream || false,
+          model: attempt.body?.model || 'unknown',
+          userAgent: headers['User-Agent'] || 'not set',
+          transform: attempt.transform || 'passthrough',
+          attempt: `${index + 1}/${attempts.length}`
+        })
+
+        response = await axios(requestOptions)
+        selectedAttempt = attempt
+
+        if (response.status >= 400) {
+          await this._consumeErrorResponseData(response)
+
+          if (this._shouldRetryWithAlternateProtocol(response, index < attempts.length - 1)) {
+            logger.warn(
+              'Upstream endpoint rejected the request shape, retrying alternate protocol',
+              {
+                accountId: account.id,
+                accountName: account.name,
+                currentPath: attempt.path,
+                nextAttempt: `${index + 2}/${attempts.length}`,
+                status: response.status
+              }
+            )
+            continue
+          }
+        }
+
+        break
       }
 
-      // 记录请求信息
-      logger.info('📤 OpenAI-Responses relay request', {
-        accountId: account.id,
-        accountName: account.name,
-        targetUrl,
-        method: req.method,
-        stream: req.body?.stream || false,
-        model: req.body?.model || 'unknown',
-        userAgent: headers['User-Agent'] || 'not set'
-      })
+      const responseAdapter = this._createResponseAdapter(selectedAttempt)
 
-      // 发送请求
-      const response = await axios(requestOptions)
-
-      // 处理 429 限流错误
       if (response.status === 429) {
         const { resetsInSeconds, errorData } = await this._handle429Error(
           account,
           response,
-          req.body?.stream,
+          selectedAttempt.body?.stream,
           sessionHash
         )
 
@@ -203,7 +201,6 @@ class OpenAIResponsesRelayService {
             .catch(() => {})
         }
 
-        // 返回错误响应（使用处理后的数据，避免循环引用）
         const errorResponse = errorData || {
           error: {
             message: 'Rate limit exceeded',
@@ -215,44 +212,8 @@ class OpenAIResponsesRelayService {
         return res.status(429).json(errorResponse)
       }
 
-      // 处理其他错误状态码
       if (response.status >= 400) {
-        // 处理流式错误响应
-        let errorData = response.data
-        if (response.data && typeof response.data.pipe === 'function') {
-          // 流式响应需要先读取内容
-          const chunks = []
-          await new Promise((resolve) => {
-            response.data.on('data', (chunk) => chunks.push(chunk))
-            response.data.on('end', resolve)
-            response.data.on('error', resolve)
-            setTimeout(resolve, 5000) // 超时保护
-          })
-          const fullResponse = Buffer.concat(chunks).toString()
-
-          // 尝试解析错误响应
-          try {
-            if (fullResponse.includes('data: ')) {
-              // SSE格式
-              const lines = fullResponse.split('\n')
-              for (const line of lines) {
-                if (line.startsWith('data: ')) {
-                  const jsonStr = line.slice(6).trim()
-                  if (jsonStr && jsonStr !== '[DONE]') {
-                    errorData = JSON.parse(jsonStr)
-                    break
-                  }
-                }
-              }
-            } else {
-              // 普通JSON
-              errorData = JSON.parse(fullResponse)
-            }
-          } catch (e) {
-            logger.error('Failed to parse error response:', e)
-            errorData = { error: { message: fullResponse || 'Unknown error' } }
-          }
-        }
+        const errorData = response.data
 
         logger.error('OpenAI-Responses API error', {
           status: response.status,
@@ -261,10 +222,9 @@ class OpenAIResponsesRelayService {
         })
 
         if (response.status === 401) {
-          logger.warn(`🚫 OpenAI Responses账号认证失败（401错误）for account ${account?.id}`)
+          logger.warn(`OpenAI Responses account unauthorized (401) for account ${account?.id}`)
 
           try {
-            // 仅临时暂停，不永久禁用
             const oaiAutoProtectionDisabled =
               account?.disableAutoProtection === true || account?.disableAutoProtection === 'true'
             if (!oaiAutoProtectionDisabled) {
@@ -277,7 +237,7 @@ class OpenAIResponsesRelayService {
             }
           } catch (markError) {
             logger.error(
-              '❌ Failed to mark OpenAI-Responses account temporarily unavailable after 401:',
+              'Failed to mark OpenAI-Responses account temporarily unavailable after 401:',
               markError
             )
           }
@@ -300,14 +260,12 @@ class OpenAIResponsesRelayService {
             }
           }
 
-          // 清理监听器
           req.removeListener('close', handleClientDisconnect)
           res.removeListener('close', handleClientDisconnect)
 
           return res.status(401).json(unauthorizedResponse)
         }
 
-        // 处理 5xx 上游错误
         if (response.status >= 500 && account?.id) {
           try {
             const oaiAutoProtectionDisabled =
@@ -330,7 +288,6 @@ class OpenAIResponsesRelayService {
           }
         }
 
-        // 清理监听器
         req.removeListener('close', handleClientDisconnect)
         res.removeListener('close', handleClientDisconnect)
 
@@ -339,38 +296,39 @@ class OpenAIResponsesRelayService {
           .json(upstreamErrorHelper.sanitizeErrorForClient(errorData))
       }
 
-      // 更新最后使用时间（节流）
       await this._throttledUpdateLastUsedAt(account.id)
 
-      // 处理流式响应
-      if (req.body?.stream && response.data && typeof response.data.pipe === 'function') {
+      if (
+        selectedAttempt.body?.stream &&
+        response.data &&
+        typeof response.data.pipe === 'function'
+      ) {
         return this._handleStreamResponse(
           response,
           res,
           account,
           apiKeyData,
-          req.body?.model,
+          selectedAttempt.requestedModel || selectedAttempt.body?.model,
           handleClientDisconnect,
-          req
+          req,
+          responseAdapter
         )
       }
 
-      // 处理非流式响应
       return this._handleNormalResponse(
         response,
         res,
         account,
         apiKeyData,
-        req.body?.model,
-        req._serviceTier || null
+        selectedAttempt.requestedModel || selectedAttempt.body?.model,
+        req._serviceTier || null,
+        responseAdapter
       )
     } catch (error) {
-      // 清理 AbortController
       if (abortController && !abortController.signal.aborted) {
         abortController.abort()
       }
 
-      // 安全地记录错误，避免循环引用
       const errorInfo = {
         message: error.message,
         code: error.code,
@@ -379,7 +337,6 @@ class OpenAIResponsesRelayService {
       }
       logger.error('OpenAI-Responses relay error:', errorInfo)
 
-      // 检查是否是网络错误
       if (error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT') {
         if (account?.id) {
           const oaiAutoProtectionDisabled =
@@ -392,14 +349,11 @@ class OpenAIResponsesRelayService {
         }
       }
 
-      // 如果已经发送了响应头，直接结束
       if (res.headersSent) {
         return res.end()
       }
 
-      // 检查是否是axios错误并包含响应
       if (error.response) {
-        // 处理axios错误响应
         const status = error.response.status || 500
         let errorData = {
           error: {
@@ -409,9 +363,7 @@ class OpenAIResponsesRelayService {
           }
         }
 
-        // 如果响应包含数据，尝试使用它
         if (error.response.data) {
-          // 检查是否是流
           if (typeof error.response.data === 'object' && !error.response.data.pipe) {
             errorData = error.response.data
           } else if (typeof error.response.data === 'string') {
@@ -425,11 +377,10 @@ class OpenAIResponsesRelayService {
 
         if (status === 401) {
           logger.warn(
-            `🚫 OpenAI Responses账号认证失败（401错误）for account ${account?.id} (catch handler)`
+            `OpenAI Responses account unauthorized (401) for account ${account?.id} (catch handler)`
           )
 
           try {
-            // 仅临时暂停，不永久禁用
             const oaiAutoProtectionDisabled =
               account?.disableAutoProtection === true || account?.disableAutoProtection === 'true'
             if (!oaiAutoProtectionDisabled) {
@@ -442,7 +393,7 @@ class OpenAIResponsesRelayService {
             }
           } catch (markError) {
             logger.error(
-              '❌ Failed to mark OpenAI-Responses account temporarily unavailable in catch handler:',
+              'Failed to mark OpenAI-Responses account temporarily unavailable in catch handler:',
               markError
             )
           }
@@ -471,7 +422,6 @@ class OpenAIResponsesRelayService {
         return res.status(status).json(upstreamErrorHelper.sanitizeErrorForClient(errorData))
       }
 
-      // 其他错误
       return res.status(500).json({
         error: {
           message: 'Internal server error',
@@ -482,7 +432,178 @@ class OpenAIResponsesRelayService {
     }
   }
 
-  // 处理流式响应
+  _buildAttempts(req, options = {}) {
+    const attempts =
+      Array.isArray(options.attempts) && options.attempts.length > 0
+        ? options.attempts
+        : [{ path: req.path, body: req.body, transform: 'passthrough' }]
+
+    return attempts.map((attempt) => ({
+      path: attempt.path || req.path,
+      body: attempt.body || req.body,
+      transform: attempt.transform || 'passthrough',
+      requestedModel: attempt.requestedModel || attempt.body?.model || req.body?.model || null
+    }))
+  }
+
+  _buildRequestHeaders(req, fullAccount) {
+    const headers = {
+      ...filterForOpenAI(req.headers),
+      Authorization: `Bearer ${fullAccount.apiKey}`,
+      'Content-Type': 'application/json'
+    }
+
+    if (fullAccount.userAgent) {
+      headers['User-Agent'] = fullAccount.userAgent
+      logger.debug(`Using custom User-Agent: ${fullAccount.userAgent}`)
+    } else if (req.headers['user-agent']) {
+      headers['User-Agent'] = req.headers['user-agent']
+      logger.debug(`Forwarding original User-Agent: ${req.headers['user-agent']}`)
+    }
+
+    return headers
+  }
+
+  _normalizeTargetPath(baseApi, targetPath) {
+    if (baseApi.endsWith('/v1') && targetPath.startsWith('/v1/')) {
+      return targetPath.slice(3)
+    }
+    return targetPath
+  }
+
+  async _consumeErrorResponseData(response) {
+    if (response.data && typeof response.data.pipe === 'function') {
+      const chunks = []
+      await new Promise((resolve) => {
+        response.data.on('data', (chunk) => chunks.push(chunk))
+        response.data.on('end', resolve)
+        response.data.on('error', resolve)
+        setTimeout(resolve, 5000)
+      })
+      const fullResponse = Buffer.concat(chunks).toString()
+
+      try {
+        if (fullResponse.includes('data: ')) {
+          const lines = fullResponse.split('\n')
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const jsonStr = line.slice(6).trim()
+              if (jsonStr && jsonStr !== '[DONE]') {
+                response.data = JSON.parse(jsonStr)
+                return response.data
+              }
+            }
+          }
+        }
+        response.data = JSON.parse(fullResponse)
+        return response.data
+      } catch (error) {
+        logger.error('Failed to parse error response:', error)
+        response.data = { error: { message: fullResponse || 'Unknown error' } }
+        return response.data
+      }
+    }
+
+    if (typeof response.data === 'string') {
+      try {
+        response.data = JSON.parse(response.data)
+      } catch (_) {
+        response.data = { error: { message: response.data || 'Unknown error' } }
+      }
+    }
+
+    return response.data
+  }
+
+  _shouldRetryWithAlternateProtocol(response, hasAlternateAttempt) {
+    if (!hasAlternateAttempt) {
+      return false
+    }
+
+    if ([404, 405, 415, 501].includes(response.status)) {
+      return true
+    }
+
+    if (![400, 403, 422].includes(response.status)) {
+      return false
+    }
+
+    const errorData = response.data?.error || response.data || {}
+    const haystack = `${errorData.code || ''} ${errorData.type || ''} ${errorData.message || ''}`
+      .toLowerCase()
+      .trim()
+
+    if (!haystack) {
+      return false
+    }
+
+    const retryPatterns = [
+      /unsupported.*endpoint/,
+      /unknown.*endpoint/,
+      /unknown.*path/,
+      /unknown.*url/,
+      /no route/,
+      /not found/,
+      /illegal access/,
+      /method not allowed/,
+      /missing required parameter.*\b(messages|input)\b/,
+      /\b(messages|input)\b.*\brequired\b/,
+      /chat\/completions/,
+      /\/responses\b/
+    ]
+
+    return retryPatterns.some((pattern) => pattern.test(haystack))
+  }
+
+  _createResponseAdapter(attempt = {}) {
+    const requestedModel = attempt.requestedModel || attempt.body?.model || null
+
+    if (attempt.transform === 'responses_to_chat') {
+      const converter = new CodexToOpenAIConverter()
+      const state = converter.createStreamState()
+
+      return {
+        convertJson: (payload) => converter.convertResponse(payload, requestedModel),
+        writeEvent: (eventData, writeChunk) => {
+          if (eventData?.error) {
+            writeChunk(toSSE(eventData))
+            return
+          }
+
+          const converted = converter.convertStreamChunk(eventData, requestedModel, state)
+          for (const chunk of converted) {
+            writeChunk(typeof chunk === 'string' ? chunk : toSSE(chunk))
+          }
+        },
+        finalizeStream: (writeChunk) => {
+          writeChunk('data: [DONE]\n\n')
+        }
+      }
+    }
+
+    if (attempt.transform === 'chat_to_responses') {
+      const converter = new ChatToResponsesConverter()
+      const state = converter.createStreamState()
+
+      return {
+        convertJson: (payload) => converter.convertResponse(payload, requestedModel),
+        writeEvent: (eventData, writeChunk) => {
+          if (eventData?.error) {
+            writeChunk(toSSE(eventData))
+            return
+          }
+
+          const convertedEvents = converter.convertStreamChunk(eventData, requestedModel, state)
+          for (const event of convertedEvents) {
+            writeChunk(toSSE(event))
+          }
+        }
+      }
+    }
+
+    return null
+  }
+
   async _handleStreamResponse(
     response,
     res,
@@ -490,9 +611,9 @@ class OpenAIResponsesRelayService {
     apiKeyData,
     requestedModel,
     handleClientDisconnect,
-    req
+    req,
+    responseAdapter = null
   ) {
-    // 设置 SSE 响应头
     res.setHeader('Content-Type', 'text/event-stream')
     res.setHeader('Cache-Control', 'no-cache')
     res.setHeader('Connection', 'keep-alive')
@@ -500,92 +621,82 @@ class OpenAIResponsesRelayService {
 
     let usageData = null
     let actualModel = null
-    let buffer = ''
     let rateLimitDetected = false
     let rateLimitResetsInSeconds = null
     let streamEnded = false
+    const parser = new IncrementalSSEParser()
 
-    // 解析 SSE 事件以捕获 usage 数据和 model
-    const parseSSEForUsage = (data) => {
-      const lines = data.split('\n')
+    const captureUsage = (eventData) => {
+      if (!eventData || typeof eventData !== 'object') {
+        return
+      }
 
-      for (const line of lines) {
-        if (line.startsWith('data:')) {
-          try {
-            const jsonStr = line.slice(5).trim()
-            if (jsonStr === '[DONE]') {
-              continue
-            }
+      if (eventData.type === 'response.completed' && eventData.response) {
+        if (eventData.response.model) {
+          actualModel = eventData.response.model
+          logger.debug(`Captured actual model from response.completed: ${actualModel}`)
+        }
 
-            const eventData = JSON.parse(jsonStr)
+        if (eventData.response.usage) {
+          usageData = eventData.response.usage
+          logger.info('Successfully captured usage data from OpenAI-Responses:', {
+            input_tokens: usageData.input_tokens,
+            output_tokens: usageData.output_tokens,
+            total_tokens: usageData.total_tokens
+          })
+        }
+      }
 
-            // 检查是否是 response.completed 事件（OpenAI-Responses 格式）
-            if (eventData.type === 'response.completed' && eventData.response) {
-              // 从响应中获取真实的 model
-              if (eventData.response.model) {
-                actualModel = eventData.response.model
-                logger.debug(`📊 Captured actual model from response.completed: ${actualModel}`)
-              }
+      if (eventData.model) {
+        actualModel = eventData.model
+      }
+      if (eventData.usage) {
+        usageData = eventData.usage
+      }
 
-              // 获取 usage 数据 - OpenAI-Responses 格式在 response.usage 下
-              if (eventData.response.usage) {
-                usageData = eventData.response.usage
-                logger.info('📊 Successfully captured usage data from OpenAI-Responses:', {
-                  input_tokens: usageData.input_tokens,
-                  output_tokens: usageData.output_tokens,
-                  total_tokens: usageData.total_tokens
-                })
-              }
-            }
-
-            // 检查是否有限流错误
-            if (eventData.error) {
-              // 检查多种可能的限流错误类型
-              if (
-                eventData.error.type === 'rate_limit_error' ||
-                eventData.error.type === 'usage_limit_reached' ||
-                eventData.error.type === 'rate_limit_exceeded'
-              ) {
-                rateLimitDetected = true
-                if (eventData.error.resets_in_seconds) {
-                  rateLimitResetsInSeconds = eventData.error.resets_in_seconds
-                  logger.warn(
-                    `🚫 Rate limit detected in stream, resets in ${rateLimitResetsInSeconds} seconds (${Math.ceil(rateLimitResetsInSeconds / 60)} minutes)`
-                  )
-                }
-              }
-            }
-          } catch (e) {
-            // 忽略解析错误
+      if (eventData.error) {
+        if (
+          eventData.error.type === 'rate_limit_error' ||
+          eventData.error.type === 'usage_limit_reached' ||
+          eventData.error.type === 'rate_limit_exceeded'
+        ) {
+          rateLimitDetected = true
+          if (eventData.error.resets_in_seconds) {
+            rateLimitResetsInSeconds = eventData.error.resets_in_seconds
+            logger.warn(
+              `Rate limit detected in stream, resets in ${rateLimitResetsInSeconds} seconds (${Math.ceil(rateLimitResetsInSeconds / 60)} minutes)`
+            )
           }
         }
       }
     }
 
-    // 监听数据流
+    const writeChunk = (chunk) => {
+      if (!res.destroyed && !streamEnded) {
+        res.write(chunk)
+      }
+    }
+
+    const flushParsedEvents = (events) => {
+      for (const event of events) {
+        if (event.type === 'data' && event.data) {
+          captureUsage(event.data)
+          if (responseAdapter) {
+            responseAdapter.writeEvent(event.data, writeChunk)
+          }
+        }
+      }
+    }
+
     response.data.on('data', (chunk) => {
       try {
         const chunkStr = chunk.toString()
 
-        // 转发数据给客户端
-        if (!res.destroyed && !streamEnded) {
-          res.write(chunk)
+        if (!responseAdapter) {
+          writeChunk(chunk)
         }
 
-        // 同时解析数据以捕获 usage 信息
-        buffer += chunkStr
-
-        // 处理完整的 SSE 事件
-        if (buffer.includes('\n\n')) {
-          const events = buffer.split('\n\n')
-          buffer = events.pop() || ''
-
-          for (const event of events) {
-            if (event.trim()) {
-              parseSSEForUsage(event)
-            }
-          }
-        }
+        flushParsedEvents(parser.feed(chunkStr))
       } catch (error) {
         logger.error('Error processing stream chunk:', error)
       }
@@ -594,22 +705,21 @@ class OpenAIResponsesRelayService {
     response.data.on('end', async () => {
       streamEnded = true
 
-      // 处理剩余的 buffer
-      if (buffer.trim()) {
-        parseSSEForUsage(buffer)
+      const remaining = parser.getRemaining()
+      if (remaining.trim()) {
+        flushParsedEvents(parser.feed('\n\n'))
       }
 
-      // 记录使用统计
+      if (responseAdapter?.finalizeStream && !res.destroyed) {
+        responseAdapter.finalizeStream(writeChunk)
+      }
+
       if (usageData) {
         try {
-          // OpenAI-Responses 使用 input_tokens/output_tokens，标准 OpenAI 使用 prompt_tokens/completion_tokens
           const totalInputTokens = usageData.input_tokens || usageData.prompt_tokens || 0
           const outputTokens = usageData.output_tokens || usageData.completion_tokens || 0
-
-          // 提取缓存相关的 tokens（如果存在）
           const cacheReadTokens = usageData.input_tokens_details?.cached_tokens || 0
           const cacheCreateTokens = extractCacheCreationTokens(usageData)
-          // 计算实际输入token（总输入减去缓存部分）
           const actualInputTokens = Math.max(0, totalInputTokens - cacheReadTokens)
 
           const totalTokens =
@@ -619,7 +729,7 @@ class OpenAIResponsesRelayService {
           const serviceTier = req._serviceTier || null
           await apiKeyService.recordUsage(
             apiKeyData.id,
-            actualInputTokens, // 传递实际输入（不含缓存）
+            actualInputTokens,
             outputTokens,
             cacheCreateTokens,
             cacheReadTokens,
@@ -630,19 +740,16 @@ class OpenAIResponsesRelayService {
           )
 
           logger.info(
-            `📊 Recorded usage - Input: ${totalInputTokens}(actual:${actualInputTokens}+cached:${cacheReadTokens}), CacheCreate: ${cacheCreateTokens}, Output: ${outputTokens}, Total: ${totalTokens}, Model: ${modelToRecord}`
+            `Recorded usage - Input: ${totalInputTokens}(actual:${actualInputTokens}+cached:${cacheReadTokens}), CacheCreate: ${cacheCreateTokens}, Output: ${outputTokens}, Total: ${totalTokens}, Model: ${modelToRecord}`
           )
 
-          // 更新账户的 token 使用统计
           await openaiResponsesAccountService.updateAccountUsage(account.id, totalTokens)
 
-          // 更新账户使用额度（如果设置了额度限制）
           if (parseFloat(account.dailyQuota) > 0) {
-            // 使用CostCalculator正确计算费用（考虑缓存token的不同价格）
             const CostCalculator = require('../../utils/costCalculator')
             const costInfo = CostCalculator.calculateCost(
               {
-                input_tokens: actualInputTokens, // 实际输入（不含缓存）
+                input_tokens: actualInputTokens,
                 output_tokens: outputTokens,
                 cache_creation_input_tokens: cacheCreateTokens,
                 cache_read_input_tokens: cacheReadTokens
@@ -657,9 +764,7 @@ class OpenAIResponsesRelayService {
         }
       }
 
-      // 如果在流式响应中检测到限流
       if (rateLimitDetected) {
-        // 使用统一调度器处理限流（与非流式响应保持一致）
         const sessionId = req.headers['session_id'] || req.body?.session_id
         const sessionHash = sessionId
           ? crypto.createHash('sha256').update(sessionId).digest('hex')
@@ -672,12 +777,9 @@ class OpenAIResponsesRelayService {
           rateLimitResetsInSeconds
         )
 
-        logger.warn(
-          `🚫 Processing rate limit for OpenAI-Responses account ${account.id} from stream`
-        )
+        logger.warn(`Processing rate limit for OpenAI-Responses account ${account.id} from stream`)
       }
 
-      // 清理监听器
       req.removeListener('close', handleClientDisconnect)
       res.removeListener('close', handleClientDisconnect)
 
@@ -696,7 +798,6 @@ class OpenAIResponsesRelayService {
       streamEnded = true
       logger.error('Stream error:', error)
 
-      // 清理监听器
       req.removeListener('close', handleClientDisconnect)
       res.removeListener('close', handleClientDisconnect)
 
@@ -707,14 +808,13 @@ class OpenAIResponsesRelayService {
       }
     })
 
-    // 处理客户端断开连接
     const cleanup = () => {
       streamEnded = true
       try {
         response.data?.unpipe?.(res)
         response.data?.destroy?.()
       } catch (_) {
-        // 忽略清理错误
+        // ignore cleanup errors
       }
     }
 
@@ -722,34 +822,26 @@ class OpenAIResponsesRelayService {
     req.on('aborted', cleanup)
   }
 
-  // 处理非流式响应
   async _handleNormalResponse(
     response,
     res,
     account,
     apiKeyData,
     requestedModel,
-    serviceTier = null
+    serviceTier = null,
+    responseAdapter = null
   ) {
     const responseData = response.data
-
-    // 提取 usage 数据和实际 model
-    // 支持两种格式：直接的 usage 或嵌套在 response 中的 usage
     const usageData = responseData?.usage || responseData?.response?.usage
     const actualModel =
       responseData?.model || responseData?.response?.model || requestedModel || 'gpt-4'
 
-    // 记录使用统计
     if (usageData) {
       try {
-        // OpenAI-Responses 使用 input_tokens/output_tokens，标准 OpenAI 使用 prompt_tokens/completion_tokens
         const totalInputTokens = usageData.input_tokens || usageData.prompt_tokens || 0
         const outputTokens = usageData.output_tokens || usageData.completion_tokens || 0
-
-        // 提取缓存相关的 tokens（如果存在）
         const cacheReadTokens = usageData.input_tokens_details?.cached_tokens || 0
         const cacheCreateTokens = extractCacheCreationTokens(usageData)
-        // 计算实际输入token（总输入减去缓存部分）
         const actualInputTokens = Math.max(0, totalInputTokens - cacheReadTokens)
 
         const totalTokens =
@@ -757,7 +849,7 @@ class OpenAIResponsesRelayService {
 
         await apiKeyService.recordUsage(
           apiKeyData.id,
-          actualInputTokens, // 传递实际输入（不含缓存）
+          actualInputTokens,
           outputTokens,
           cacheCreateTokens,
           cacheReadTokens,
@@ -768,19 +860,16 @@ class OpenAIResponsesRelayService {
         )
 
         logger.info(
-          `📊 Recorded non-stream usage - Input: ${totalInputTokens}(actual:${actualInputTokens}+cached:${cacheReadTokens}), CacheCreate: ${cacheCreateTokens}, Output: ${outputTokens}, Total: ${totalTokens}, Model: ${actualModel}`
+          `Recorded non-stream usage - Input: ${totalInputTokens}(actual:${actualInputTokens}+cached:${cacheReadTokens}), CacheCreate: ${cacheCreateTokens}, Output: ${outputTokens}, Total: ${totalTokens}, Model: ${actualModel}`
         )
 
-        // 更新账户的 token 使用统计
         await openaiResponsesAccountService.updateAccountUsage(account.id, totalTokens)
 
-        // 更新账户使用额度（如果设置了额度限制）
         if (parseFloat(account.dailyQuota) > 0) {
-          // 使用CostCalculator正确计算费用（考虑缓存token的不同价格）
           const CostCalculator = require('../../utils/costCalculator')
           const costInfo = CostCalculator.calculateCost(
             {
-              input_tokens: actualInputTokens, // 实际输入（不含缓存）
+              input_tokens: actualInputTokens,
               output_tokens: outputTokens,
               cache_creation_input_tokens: cacheCreateTokens,
               cache_read_input_tokens: cacheReadTokens
@@ -795,8 +884,16 @@ class OpenAIResponsesRelayService {
       }
     }
 
-    // 返回响应
-    res.status(response.status).json(responseData)
+    let clientPayload = responseData
+    if (responseAdapter?.convertJson) {
+      try {
+        clientPayload = responseAdapter.convertJson(responseData)
+      } catch (error) {
+        logger.error('Failed to transform non-stream response:', error)
+      }
+    }
+
+    return res.status(response.status).json(clientPayload)
 
     logger.info('Normal response completed', {
       accountId: account.id,
@@ -806,7 +903,6 @@ class OpenAIResponsesRelayService {
     })
   }
 
-  // 处理 429 限流错误
   async _handle429Error(account, response, isStream = false, sessionHash = null) {
     let resetsInSeconds = null
     let errorData = null

@@ -7,15 +7,15 @@ const { authenticateApiKey } = require('../middleware/auth')
 const unifiedOpenAIScheduler = require('../services/scheduler/unifiedOpenAIScheduler')
 const openaiAccountService = require('../services/account/openaiAccountService')
 const openaiResponsesAccountService = require('../services/account/openaiResponsesAccountService')
-const openaiResponsesRelayService = require('../services/relay/openaiResponsesRelayService')
+const openaiProtocolBridgeService = require('../services/openaiProtocol/bridgeService')
 const apiKeyService = require('../services/apiKeyService')
-const forwardingRuleService = require('../services/forwardingRuleService')
 const redis = require('../models/redis')
 const crypto = require('crypto')
 const ProxyHelper = require('../utils/proxyHelper')
 const { updateRateLimitCounters } = require('../utils/rateLimitHelper')
 const { IncrementalSSEParser } = require('../utils/sseParser')
 const { getSafeMessage } = require('../utils/errorSanitizer')
+const { inferRequestCapabilities } = require('../services/openaiProtocol/capabilityProfile')
 
 // Codex CLI 系统提示词（非 Codex CLI 客户端请求时注入，统一端点也使用）
 const CODEX_CLI_INSTRUCTIONS =
@@ -111,7 +111,12 @@ async function applyRateLimitTracking(
 }
 
 // 使用统一调度器选择 OpenAI 账户
-async function getOpenAIAuthToken(apiKeyData, sessionId = null, requestedModel = null) {
+async function getOpenAIAuthToken(
+  apiKeyData,
+  sessionId = null,
+  requestedModel = null,
+  requestCapabilities = null
+) {
   try {
     // 生成会话哈希（如果有会话ID）
     const sessionHash = sessionId
@@ -122,7 +127,8 @@ async function getOpenAIAuthToken(apiKeyData, sessionId = null, requestedModel =
     const result = await unifiedOpenAIScheduler.selectAccountForApiKey(
       apiKeyData,
       sessionHash,
-      requestedModel
+      requestedModel,
+      requestCapabilities
     )
 
     if (!result || !result.accountId) {
@@ -225,6 +231,31 @@ async function getOpenAIAuthToken(apiKeyData, sessionId = null, requestedModel =
   }
 }
 
+function getOpenAIResponsesProviderEndpoint(account) {
+  return openaiResponsesAccountService.normalizeProviderEndpoint(account?.providerEndpoint)
+}
+
+async function resolveOpenAIRequestContext(
+  apiKeyData,
+  sessionId = null,
+  requestedModel = null,
+  requestCapabilities = null
+) {
+  const authContext = await getOpenAIAuthToken(
+    apiKeyData,
+    sessionId,
+    requestedModel,
+    requestCapabilities
+  )
+  return {
+    ...authContext,
+    providerEndpoint:
+      authContext.accountType === 'openai-responses'
+        ? getOpenAIResponsesProviderEndpoint(authContext.account)
+        : null
+  }
+}
+
 // 主处理函数，供两个路由共享
 const handleResponses = async (req, res) => {
   let upstream = null
@@ -267,6 +298,7 @@ const handleResponses = async (req, res) => {
     // 从请求体中提取模型和流式标志
     const clientRequestedModel = req.body?.model || null
     let requestedModel = clientRequestedModel
+    const requestCapabilities = inferRequestCapabilities(req.body, 'responses')
     const isCodexModel =
       typeof requestedModel === 'string' && requestedModel.toLowerCase().includes('codex')
 
@@ -316,27 +348,31 @@ const handleResponses = async (req, res) => {
     }
 
     // 使用调度器选择账户
-    ;({ accessToken, accountId, accountType, proxy, account } = await getOpenAIAuthToken(
-      apiKeyData,
-      sessionId,
-      requestedModel
-    ))
+    const authContext =
+      req._openaiAuthContext ||
+      (await resolveOpenAIRequestContext(
+        apiKeyData,
+        sessionId,
+        requestedModel,
+        requestCapabilities
+      ))
+    ;({ accessToken, accountId, accountType, proxy, account } = authContext)
+    const providerEndpoint =
+      authContext.providerEndpoint || getOpenAIResponsesProviderEndpoint(account)
 
-    // 如果是 OpenAI-Responses 账户，使用专门的中继服务处理
+    // 如果是 OpenAI-Responses 账户，统一交给协议桥接层做协议选择/回退
     if (accountType === 'openai-responses') {
-      logger.info(`🔀 Using OpenAI-Responses relay service for account: ${account.name}`)
-      return await openaiResponsesRelayService.handleRequest(req, res, account, apiKeyData)
-    }
-
-    const forwardingResolution = await forwardingRuleService.rewriteRequestModel({
-      requestBody: req.body,
-      platform: accountType,
-      accountId,
-      requestedModel: clientRequestedModel || requestedModel
-    })
-
-    if (forwardingResolution.matched) {
-      requestedModel = forwardingResolution.resolvedModel
+      logger.info(
+        `🔀 Routing OpenAI Responses request through protocol bridge for account: ${account.name}`
+      )
+      return await openaiProtocolBridgeService.handleResponsesClientRequest(
+        req,
+        res,
+        account,
+        apiKeyData,
+        clientRequestedModel || requestedModel,
+        { providerEndpoint }
+      )
     }
 
     // 基于白名单构造上游所需的请求头，确保键为小写且值受控
@@ -841,6 +877,7 @@ const handleResponses = async (req, res) => {
     logger.error('Proxy to ChatGPT codex/responses failed:', error)
     // 优先使用主动设置的 statusCode，然后是上游响应的状态码，最后默认 500
     const status = error.statusCode || error.response?.status || 500
+    const publicMessage = error.publicMessage || null
 
     if ((status === 401 || status === 402) && accountId) {
       const statusLabel = status === 401 ? '401错误' : '402错误'
@@ -877,15 +914,15 @@ const handleResponses = async (req, res) => {
 
     let responsePayload = error.response?.data
     if (!responsePayload) {
-      responsePayload = { error: { message: getSafeMessage(error) } }
+      responsePayload = { error: { message: publicMessage || getSafeMessage(error) } }
     } else if (typeof responsePayload === 'string') {
-      responsePayload = { error: { message: getSafeMessage(responsePayload) } }
+      responsePayload = { error: { message: publicMessage || getSafeMessage(responsePayload) } }
     } else if (typeof responsePayload === 'object' && !responsePayload.error) {
       responsePayload = {
-        error: { message: getSafeMessage(responsePayload.message || error) }
+        error: { message: publicMessage || getSafeMessage(responsePayload.message || error) }
       }
     } else if (responsePayload.error?.message) {
-      responsePayload.error.message = getSafeMessage(responsePayload.error.message)
+      responsePayload.error.message = publicMessage || getSafeMessage(responsePayload.error.message)
     }
 
     if (!res.headersSent) {
@@ -967,3 +1004,5 @@ router.get('/key-info', authenticateApiKey, async (req, res) => {
 module.exports = router
 module.exports.handleResponses = handleResponses
 module.exports.CODEX_CLI_INSTRUCTIONS = CODEX_CLI_INSTRUCTIONS
+module.exports.getOpenAIResponsesProviderEndpoint = getOpenAIResponsesProviderEndpoint
+module.exports.resolveOpenAIRequestContext = resolveOpenAIRequestContext

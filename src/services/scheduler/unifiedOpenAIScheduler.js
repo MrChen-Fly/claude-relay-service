@@ -5,6 +5,10 @@ const redis = require('../../models/redis')
 const logger = require('../../utils/logger')
 const { isSchedulable, sortAccountsByPriority } = require('../../utils/commonHelper')
 const upstreamErrorHelper = require('../../utils/upstreamErrorHelper')
+const {
+  inferAccountCapabilities,
+  getCapabilityMismatchReasons
+} = require('../openaiProtocol/capabilityProfile')
 
 class UnifiedOpenAIScheduler {
   constructor() {
@@ -118,8 +122,47 @@ class UnifiedOpenAIScheduler {
     return { canUse: true }
   }
 
+  _getCompatibilityStatus(account, accountType, requestCapabilities = null) {
+    if (!requestCapabilities) {
+      return { compatible: true, reasons: [] }
+    }
+
+    const accountCapabilities = inferAccountCapabilities(account, accountType)
+    const reasons = getCapabilityMismatchReasons(requestCapabilities, accountCapabilities)
+
+    return {
+      compatible: reasons.length === 0,
+      reasons,
+      accountCapabilities
+    }
+  }
+
+  _supportsRequestedModel(account, accountType, requestedModel) {
+    if (!requestedModel) {
+      return true
+    }
+
+    if (accountType === 'openai-responses') {
+      return openaiResponsesAccountService.isModelSupported(
+        account?.modelMapping || account?.supportedModels,
+        requestedModel
+      )
+    }
+
+    if (account?.supportedModels && account.supportedModels.length > 0) {
+      return account.supportedModels.includes(requestedModel)
+    }
+
+    return true
+  }
+
   // 🎯 统一调度OpenAI账号
-  async selectAccountForApiKey(apiKeyData, sessionHash = null, requestedModel = null) {
+  async selectAccountForApiKey(
+    apiKeyData,
+    sessionHash = null,
+    requestedModel = null,
+    requestCapabilities = null
+  ) {
     try {
       // 如果API Key绑定了专属账户或分组，优先使用
       if (apiKeyData.openaiAccountId) {
@@ -129,7 +172,13 @@ class UnifiedOpenAIScheduler {
           logger.info(
             `🎯 API key ${apiKeyData.name} is bound to group ${groupId}, selecting from group`
           )
-          return await this.selectAccountFromGroup(groupId, sessionHash, requestedModel, apiKeyData)
+          return await this.selectAccountFromGroup(
+            groupId,
+            sessionHash,
+            requestedModel,
+            apiKeyData,
+            requestCapabilities
+          )
         }
 
         // 普通专属账户 - 根据前缀判断是 OpenAI 还是 OpenAI-Responses 类型
@@ -223,22 +272,25 @@ class UnifiedOpenAIScheduler {
               }
             }
 
-            // 专属账户：可选的模型检查（只有明确配置了supportedModels且不为空才检查）
-            // OpenAI-Responses 账户默认支持所有模型
-            if (
-              accountType === 'openai' &&
-              requestedModel &&
-              boundAccount.supportedModels &&
-              boundAccount.supportedModels.length > 0
-            ) {
-              const modelSupported = boundAccount.supportedModels.includes(requestedModel)
-              if (!modelSupported) {
-                const errorMsg = `Dedicated account ${boundAccount.name} does not support model ${requestedModel}`
-                logger.warn(`⚠️ ${errorMsg}`)
-                const error = new Error(errorMsg)
-                error.statusCode = 400 // Bad Request - 请求参数错误
-                throw error
-              }
+            const compatibility = this._getCompatibilityStatus(
+              boundAccount,
+              accountType,
+              requestCapabilities
+            )
+            if (!compatibility.compatible) {
+              const errorMsg = `Dedicated account ${boundAccount.name} does not support request features: ${compatibility.reasons.join(', ')}`
+              logger.warn(`⚠️ ${errorMsg}`)
+              const error = new Error(errorMsg)
+              error.statusCode = 400
+              throw error
+            }
+
+            if (!this._supportsRequestedModel(boundAccount, accountType, requestedModel)) {
+              const errorMsg = `Dedicated account ${boundAccount.name} does not support model ${requestedModel}`
+              logger.warn(`⚠️ ${errorMsg}`)
+              const error = new Error(errorMsg)
+              error.statusCode = 400 // Bad Request - 请求参数错误
+              throw error
             }
 
             logger.info(
@@ -279,7 +331,9 @@ class UnifiedOpenAIScheduler {
           // 验证映射的账户是否仍然可用
           const isAvailable = await this._isAccountAvailable(
             mappedAccount.accountId,
-            mappedAccount.accountType
+            mappedAccount.accountType,
+            requestedModel,
+            requestCapabilities
           )
           if (isAvailable) {
             // 🚀 智能会话续期（续期 unified 映射键，按配置）
@@ -300,19 +354,28 @@ class UnifiedOpenAIScheduler {
       }
 
       // 获取所有可用账户
-      const availableAccounts = await this._getAllAvailableAccounts(apiKeyData, requestedModel)
+      const { accounts: availableAccounts, capabilityMismatchCount } =
+        await this._getAllAvailableAccounts(apiKeyData, requestedModel, requestCapabilities)
 
       if (availableAccounts.length === 0) {
-        // 提供更详细的错误信息
+        if (capabilityMismatchCount > 0) {
+          const error = new Error('No available OpenAI accounts support the requested features')
+          error.statusCode = 400
+          error.publicMessage = 'No available OpenAI accounts support the requested features'
+          throw error
+        }
+
         if (requestedModel) {
           const error = new Error(
             `No available OpenAI accounts support the requested model: ${requestedModel}`
           )
           error.statusCode = 400 // Bad Request - 模型不支持
+          error.publicMessage = `No available OpenAI accounts support the requested model: ${requestedModel}`
           throw error
         } else {
           const error = new Error('No available OpenAI accounts')
           error.statusCode = 402 // Payment Required - 资源耗尽
+          error.publicMessage = 'No available OpenAI accounts'
           throw error
         }
       }
@@ -353,8 +416,9 @@ class UnifiedOpenAIScheduler {
   }
 
   // 📋 获取所有可用账户（仅共享池）
-  async _getAllAvailableAccounts(apiKeyData, requestedModel = null) {
+  async _getAllAvailableAccounts(apiKeyData, requestedModel = null, requestCapabilities = null) {
     const availableAccounts = []
+    let capabilityMismatchCount = 0
 
     // 注意：专属账户的处理已经在 selectAccountForApiKey 中完成
     // 这里只处理共享池账户
@@ -411,16 +475,20 @@ class UnifiedOpenAIScheduler {
           }
         }
 
-        // 检查模型支持（仅在明确设置了supportedModels且不为空时才检查）
-        // 如果没有设置supportedModels或为空数组，则支持所有模型
-        if (requestedModel && account.supportedModels && account.supportedModels.length > 0) {
-          const modelSupported = account.supportedModels.includes(requestedModel)
-          if (!modelSupported) {
-            logger.debug(
-              `⏭️ Skipping OpenAI account ${account.name} - doesn't support model ${requestedModel}`
-            )
-            continue
-          }
+        if (!this._supportsRequestedModel(account, 'openai', requestedModel)) {
+          logger.debug(
+            `⏭️ Skipping OpenAI account ${account.name} - doesn't support model ${requestedModel}`
+          )
+          continue
+        }
+
+        const compatibility = this._getCompatibilityStatus(account, 'openai', requestCapabilities)
+        if (!compatibility.compatible) {
+          capabilityMismatchCount += 1
+          logger.debug(
+            `⏭️ Skipping OpenAI account ${account.name} - unsupported request features: ${compatibility.reasons.join(', ')}`
+          )
+          continue
         }
 
         availableAccounts.push({
@@ -502,8 +570,25 @@ class UnifiedOpenAIScheduler {
           continue
         }
 
-        // OpenAI-Responses 账户默认支持所有模型
-        // 因为它们是第三方兼容 API，模型支持由第三方决定
+        if (!this._supportsRequestedModel(account, 'openai-responses', requestedModel)) {
+          logger.debug(
+            `⏭️ Skipping OpenAI-Responses account ${account.name} - doesn't support model ${requestedModel}`
+          )
+          continue
+        }
+
+        const compatibility = this._getCompatibilityStatus(
+          account,
+          'openai-responses',
+          requestCapabilities
+        )
+        if (!compatibility.compatible) {
+          capabilityMismatchCount += 1
+          logger.debug(
+            `⏭️ Skipping OpenAI-Responses account ${account.name} - unsupported request features: ${compatibility.reasons.join(', ')}`
+          )
+          continue
+        }
 
         availableAccounts.push({
           ...account,
@@ -515,11 +600,19 @@ class UnifiedOpenAIScheduler {
       }
     }
 
-    return availableAccounts
+    return {
+      accounts: availableAccounts,
+      capabilityMismatchCount
+    }
   }
 
   // 🔍 检查账户是否可用
-  async _isAccountAvailable(accountId, accountType) {
+  async _isAccountAvailable(
+    accountId,
+    accountType,
+    requestedModel = null,
+    requestCapabilities = null
+  ) {
     try {
       if (accountType === 'openai') {
         const account = await openaiAccountService.getAccount(accountId)
@@ -552,6 +645,15 @@ class UnifiedOpenAIScheduler {
         )
         if (isTempUnavailable) {
           logger.info(`⏱️ OpenAI account ${accountId} (${accountType}) is temporarily unavailable`)
+          return false
+        }
+
+        if (!this._supportsRequestedModel(account, 'openai', requestedModel)) {
+          return false
+        }
+
+        const compatibility = this._getCompatibilityStatus(account, 'openai', requestCapabilities)
+        if (!compatibility.compatible) {
           return false
         }
 
@@ -589,6 +691,19 @@ class UnifiedOpenAIScheduler {
         )
         if (isTempUnavailable) {
           logger.info(`⏱️ OpenAI account ${accountId} (${accountType}) is temporarily unavailable`)
+          return false
+        }
+
+        if (!this._supportsRequestedModel(account, 'openai-responses', requestedModel)) {
+          return false
+        }
+
+        const compatibility = this._getCompatibilityStatus(
+          account,
+          'openai-responses',
+          requestCapabilities
+        )
+        if (!compatibility.compatible) {
           return false
         }
 
@@ -812,7 +927,13 @@ class UnifiedOpenAIScheduler {
   }
 
   // 👥 从分组中选择账户
-  async selectAccountFromGroup(groupId, sessionHash = null, requestedModel = null) {
+  async selectAccountFromGroup(
+    groupId,
+    sessionHash = null,
+    requestedModel = null,
+    _apiKeyData = null,
+    requestCapabilities = null
+  ) {
     try {
       // 获取分组信息
       const group = await accountGroupService.getGroup(groupId)
@@ -839,7 +960,9 @@ class UnifiedOpenAIScheduler {
           if (isInGroup) {
             const isAvailable = await this._isAccountAvailable(
               mappedAccount.accountId,
-              mappedAccount.accountType
+              mappedAccount.accountType,
+              requestedModel,
+              requestCapabilities
             )
             if (isAvailable) {
               // 🚀 智能会话续期（续期 unified 映射键，按配置）
@@ -922,16 +1045,23 @@ class UnifiedOpenAIScheduler {
             }
           }
 
-          // 检查模型支持（仅在明确设置了supportedModels且不为空时才检查）
-          // 如果没有设置supportedModels或为空数组，则支持所有模型
-          if (requestedModel && account.supportedModels && account.supportedModels.length > 0) {
-            const modelSupported = account.supportedModels.includes(requestedModel)
-            if (!modelSupported) {
-              logger.debug(
-                `⏭️ Skipping group member ${accountType} account ${account.name} - doesn't support model ${requestedModel}`
-              )
-              continue
-            }
+          if (!this._supportsRequestedModel(account, accountType, requestedModel)) {
+            logger.debug(
+              `⏭️ Skipping group member ${accountType} account ${account.name} - doesn't support model ${requestedModel}`
+            )
+            continue
+          }
+
+          const compatibility = this._getCompatibilityStatus(
+            account,
+            accountType,
+            requestCapabilities
+          )
+          if (!compatibility.compatible) {
+            logger.debug(
+              `⏭️ Skipping group member ${accountType} account ${account.name} - unsupported request features: ${compatibility.reasons.join(', ')}`
+            )
+            continue
           }
 
           // 添加到可用账户列表

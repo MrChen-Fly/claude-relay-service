@@ -39,7 +39,6 @@ const tabRouteMap = computed(() => {
     dashboard: '/dashboard',
     apiKeys: '/api-keys',
     accounts: '/accounts',
-    forwardingRules: '/forwarding-rules',
     quotaCards: '/quota-cards',
     settings: '/settings'
   }
@@ -68,7 +67,6 @@ const initActiveTab = () => {
       Dashboard: 'dashboard',
       ApiKeys: 'apiKeys',
       Accounts: 'accounts',
-      ForwardingRules: 'forwardingRules',
       QuotaCards: 'quotaCards',
       Settings: 'settings'
     }
@@ -98,7 +96,6 @@ watch(
         Dashboard: 'dashboard',
         ApiKeys: 'apiKeys',
         Accounts: 'accounts',
-        ForwardingRules: 'forwardingRules',
         QuotaCards: 'quotaCards',
         Tutorial: 'tutorial',
         Settings: 'settings'

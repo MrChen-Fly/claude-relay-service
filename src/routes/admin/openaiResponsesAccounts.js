@@ -13,7 +13,11 @@ const { authenticateAdmin } = require('../../middleware/auth')
 const logger = require('../../utils/logger')
 const webhookNotifier = require('../../utils/webhookNotifier')
 const { formatAccountExpiry, mapExpiryField } = require('./utils')
-const { createOpenAITestPayload, extractErrorMessage } = require('../../utils/testPayloadHelper')
+const {
+  createOpenAITestPayload,
+  createChatCompletionsTestPayload,
+  extractErrorMessage
+} = require('../../utils/testPayloadHelper')
 const { getProxyAgent } = require('../../utils/proxyHelper')
 
 const router = express.Router()
@@ -474,17 +478,23 @@ router.post('/openai-responses-accounts/:accountId/test', authenticateAdmin, asy
 
     // 构造测试请求（根据 providerEndpoint 和 baseApi 决定端点路径）
     const baseUrl = account.baseApi || 'https://api.openai.com'
-    const providerEndpoint = account.providerEndpoint || 'responses'
-    let endpointPath = '/responses'
-    if (providerEndpoint === 'auto') {
-      endpointPath = '/responses' // 测试时默认用 responses
-    }
+    const providerEndpoint = openaiResponsesAccountService.normalizeProviderEndpoint(
+      account.providerEndpoint
+    )
+    const resolvedModel = openaiResponsesAccountService.getMappedModel(
+      account.modelMapping || account.supportedModels,
+      model
+    )
+    const isChatCompletionsEndpoint = providerEndpoint === 'completions'
+    let endpointPath = isChatCompletionsEndpoint ? '/chat/completions' : '/responses'
     // 防止 baseApi 已含 /v1 时路径重复
     if (!baseUrl.endsWith('/v1')) {
       endpointPath = `/v1${endpointPath}`
     }
     const apiUrl = `${baseUrl}${endpointPath}`
-    const payload = createOpenAITestPayload(model, { stream: false })
+    const payload = isChatCompletionsEndpoint
+      ? createChatCompletionsTestPayload(resolvedModel, { maxTokens: 100 })
+      : createOpenAITestPayload(resolvedModel, { stream: false })
 
     const requestConfig = {
       headers: {
@@ -506,15 +516,26 @@ router.post('/openai-responses-accounts/:accountId/test', authenticateAdmin, asy
     const response = await axios.post(apiUrl, payload, requestConfig)
     const latency = Date.now() - startTime
 
-    // 提取响应文本（Responses API 格式）
+    // 提取响应文本（同时兼容 Responses / Chat Completions）
     let responseText = ''
-    const output = response.data?.output
-    if (Array.isArray(output)) {
-      for (const item of output) {
-        if (item.type === 'message' && Array.isArray(item.content)) {
-          for (const block of item.content) {
-            if (block.type === 'output_text' && block.text) {
-              responseText += block.text
+    if (isChatCompletionsEndpoint) {
+      const content = response.data?.choices?.[0]?.message?.content
+      if (typeof content === 'string') {
+        responseText = content
+      } else if (Array.isArray(content)) {
+        responseText = content
+          .map((item) => (item && item.type === 'text' ? item.text || '' : ''))
+          .join('')
+      }
+    } else {
+      const output = response.data?.output
+      if (Array.isArray(output)) {
+        for (const item of output) {
+          if (item.type === 'message' && Array.isArray(item.content)) {
+            for (const block of item.content) {
+              if (block.type === 'output_text' && block.text) {
+                responseText += block.text
+              }
             }
           }
         }

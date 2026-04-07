@@ -16,6 +16,7 @@ pnpm-debug.log*
 # MCP configuration (local only)
 .mcp.json
 .spec-workflow/
+.playwright-mcp/
 
 # Data directory (contains sensitive information)
 data/

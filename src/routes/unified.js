@@ -11,7 +11,9 @@ const openaiRoutes = require('./openaiRoutes')
 const { CODEX_CLI_INSTRUCTIONS } = require('./openaiRoutes')
 const apiKeyService = require('../services/apiKeyService')
 const GeminiToOpenAIConverter = require('../services/geminiToOpenAI')
-const CodexToOpenAIConverter = require('../services/codexToOpenAI')
+const openaiProtocolBridgeService = require('../services/openaiProtocol/bridgeService')
+const { inferRequestCapabilities } = require('../services/openaiProtocol/capabilityProfile')
+const { getSafeMessage } = require('../utils/errorSanitizer')
 
 const router = express.Router()
 
@@ -42,9 +44,17 @@ function detectBackendFromModel(modelName) {
   return 'claude'
 }
 
+function detectBackendFromRequest(req, modelName) {
+  if (req.baseUrl === '/openai' || req.originalUrl?.startsWith('/openai/')) {
+    return 'openai'
+  }
+
+  return detectBackendFromModel(modelName)
+}
+
 // 🚀 智能后端路由处理器
 async function routeToBackend(req, res, requestedModel) {
-  const backend = detectBackendFromModel(requestedModel)
+  const backend = detectBackendFromRequest(req, requestedModel)
 
   logger.info(`🔀 Routing request - Model: ${requestedModel}, Backend: ${backend}`)
 
@@ -74,148 +84,34 @@ async function routeToBackend(req, res, requestedModel) {
         }
       })
     }
-    // 响应格式拦截：Codex/Responses → OpenAI Chat Completions
-    const codexConverter = new CodexToOpenAIConverter()
-    const originalJson = res.json.bind(res)
+    const sessionId =
+      req.headers['session_id'] ||
+      req.headers['x-session-id'] ||
+      req.body?.session_id ||
+      req.body?.conversation_id ||
+      req.body?.prompt_cache_key ||
+      null
+    const requestCapabilities = inferRequestCapabilities(req.body, 'chat_completions')
+    const openaiRequestContext = await openaiRoutes.resolveOpenAIRequestContext(
+      req.apiKey,
+      sessionId,
+      requestedModel,
+      requestCapabilities
+    )
 
-    // 流式：patch res.write/res.end 拦截 SSE 事件
-    // 与 openaiRoutes 保持一致：stream 缺省时视为流式（stream !== false）
-    if (req.body.stream !== false) {
-      const streamState = codexConverter.createStreamState()
-      const sseBuffer = { data: '' }
-      const originalWrite = res.write.bind(res)
-      const originalEnd = res.end.bind(res)
-
-      res.write = function (chunk, encoding, callback) {
-        if (res.statusCode >= 400) {
-          return originalWrite(chunk, encoding, callback)
+    if (openaiRequestContext.accountType === 'openai-responses') {
+      return await openaiProtocolBridgeService.handleChatClientRequest(
+        req,
+        res,
+        openaiRequestContext.account,
+        req.apiKey,
+        {
+          requestedModel,
+          providerEndpoint: openaiRequestContext.providerEndpoint,
+          codexInstructions: CODEX_CLI_INSTRUCTIONS
         }
-
-        const str = (typeof chunk === 'string' ? chunk : chunk.toString()).replace(/\r\n/g, '\n')
-        sseBuffer.data += str
-
-        let idx
-        while ((idx = sseBuffer.data.indexOf('\n\n')) !== -1) {
-          const event = sseBuffer.data.slice(0, idx)
-          sseBuffer.data = sseBuffer.data.slice(idx + 2)
-
-          if (!event.trim()) {
-            continue
-          }
-
-          const lines = event.split('\n')
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              const jsonStr = line.slice(6)
-              if (!jsonStr || jsonStr === '[DONE]') {
-                continue
-              }
-
-              try {
-                const eventData = JSON.parse(jsonStr)
-                if (eventData.error) {
-                  originalWrite(`data: ${jsonStr}\n\n`)
-                  continue
-                }
-                const converted = codexConverter.convertStreamChunk(
-                  eventData,
-                  requestedModel,
-                  streamState
-                )
-                for (const c of converted) {
-                  originalWrite(c)
-                }
-              } catch (e) {
-                originalWrite(`data: ${jsonStr}\n\n`)
-              }
-            }
-          }
-        }
-
-        if (typeof callback === 'function') {
-          callback()
-        }
-        return true
-      }
-
-      res.end = function (chunk, encoding, callback) {
-        if (res.statusCode < 400) {
-          // 处理 res.end(chunk) 传入的最后一块数据
-          if (chunk) {
-            const str = (typeof chunk === 'string' ? chunk : chunk.toString()).replace(
-              /\r\n/g,
-              '\n'
-            )
-            sseBuffer.data += str
-            chunk = undefined
-          }
-
-          if (sseBuffer.data.trim()) {
-            const remaining = `${sseBuffer.data}\n\n`
-            sseBuffer.data = ''
-
-            const lines = remaining.split('\n')
-            for (const line of lines) {
-              if (line.startsWith('data: ')) {
-                const jsonStr = line.slice(6)
-                if (!jsonStr || jsonStr === '[DONE]') {
-                  continue
-                }
-                try {
-                  const eventData = JSON.parse(jsonStr)
-                  if (eventData.error) {
-                    originalWrite(`data: ${jsonStr}\n\n`)
-                  } else {
-                    const converted = codexConverter.convertStreamChunk(
-                      eventData,
-                      requestedModel,
-                      streamState
-                    )
-                    for (const c of converted) {
-                      originalWrite(c)
-                    }
-                  }
-                } catch (e) {
-                  originalWrite(`data: ${jsonStr}\n\n`)
-                }
-              }
-            }
-          }
-
-          originalWrite('data: [DONE]\n\n')
-        }
-        return originalEnd(chunk, encoding, callback)
-      }
+      )
     }
-
-    // 非流式：patch res.json 拦截 JSON 响应
-    // chatgpt.com 后端返回 { type: "response.completed", response: {...} }
-    // api.openai.com 后端返回标准 Response 对象 { object: "response", status, output, ... }
-    res.json = function (data) {
-      if (res.statusCode >= 400) {
-        return originalJson(data)
-      }
-      if (data && (data.type === 'response.completed' || data.object === 'response')) {
-        try {
-          return originalJson(codexConverter.convertResponse(data, requestedModel))
-        } catch (e) {
-          logger.debug('Codex response conversion failed, passing through:', e.message)
-          return originalJson(data)
-        }
-      }
-      return originalJson(data)
-    }
-
-    // 输入转换：Chat Completions → Responses API 格式
-    req.body = codexConverter.buildRequestFromOpenAI(req.body)
-    // 注入 Codex CLI 系统提示词（与 handleResponses 非 Codex CLI 适配一致）
-    req.body.instructions = CODEX_CLI_INSTRUCTIONS
-    req._fromUnifiedEndpoint = true
-    // 修正请求路径：body 已转为 Responses 格式，路径需与之匹配
-    // Express req.path 是只读 getter（派生自 req.url），需改 req.url
-    req.url = '/v1/responses'
-
-    return await openaiRoutes.handleResponses(req, res)
   } else if (backend === 'gemini') {
     // Gemini 后端
     if (!apiKeyService.hasPermission(permissions, 'gemini')) {
@@ -336,8 +232,7 @@ async function routeToBackend(req, res, requestedModel) {
   }
 }
 
-// 🔄 OpenAI 兼容的 chat/completions 端点（智能后端路由）
-router.post('/v1/chat/completions', authenticateApiKey, async (req, res) => {
+async function handleOpenAIChatCompletions(req, res) {
   try {
     // 验证必需参数
     if (!req.body.messages || !Array.isArray(req.body.messages) || req.body.messages.length === 0) {
@@ -358,19 +253,21 @@ router.post('/v1/chat/completions', authenticateApiKey, async (req, res) => {
   } catch (error) {
     logger.error('❌ OpenAI chat/completions error:', error)
     if (!res.headersSent) {
-      res.status(500).json({
+      const status = error.statusCode || error.response?.status || 500
+      const errorType = status === 400 ? 'invalid_request_error' : 'server_error'
+      const errorCode = status === 400 ? 'invalid_request' : 'internal_error'
+      res.status(status).json({
         error: {
-          message: 'Internal server error',
-          type: 'server_error',
-          code: 'internal_error'
+          message: error.publicMessage || getSafeMessage(error),
+          type: errorType,
+          code: errorCode
         }
       })
     }
   }
-})
+}
 
-// 🔄 OpenAI 兼容的 completions 端点（传统格式，智能后端路由）
-router.post('/v1/completions', authenticateApiKey, async (req, res) => {
+async function handleOpenAICompletions(req, res) {
   try {
     // 验证必需参数
     if (!req.body.prompt) {
@@ -421,7 +318,17 @@ router.post('/v1/completions', authenticateApiKey, async (req, res) => {
       })
     }
   }
-})
+}
+
+// 🔄 OpenAI 兼容的 chat/completions 端点（智能后端路由）
+router.post(
+  ['/chat/completions', '/v1/chat/completions'],
+  authenticateApiKey,
+  handleOpenAIChatCompletions
+)
+
+// 🔄 OpenAI 兼容的 completions 端点（传统格式，智能后端路由）
+router.post(['/completions', '/v1/completions'], authenticateApiKey, handleOpenAICompletions)
 
 // --- OpenAI Chat Completions → Gemini 原生请求转换（OpenAI → Gemini 格式映射） ---
 

@@ -258,20 +258,6 @@ export const getQuotaCardsStatsApi = () =>
 export const getRedemptionsApi = () => request({ url: '/admin/redemptions', method: 'GET' })
 export const revokeRedemptionApi = (id, data) =>
   request({ url: `/admin/redemptions/${id}/revoke`, method: 'POST', data })
-export const getForwardingRulesApi = (params) =>
-  request({ url: '/admin/forwarding-rules', method: 'GET', params })
-export const getForwardingRuleByIdApi = (id) =>
-  request({ url: `/admin/forwarding-rules/${id}`, method: 'GET' })
-export const getForwardingRuleAccountOptionsApi = (params) =>
-  request({ url: '/admin/forwarding-rules/account-options', method: 'GET', params })
-export const createForwardingRuleApi = (data) =>
-  request({ url: '/admin/forwarding-rules', method: 'POST', data })
-export const updateForwardingRuleApi = (id, data) =>
-  request({ url: `/admin/forwarding-rules/${id}`, method: 'PUT', data })
-export const toggleForwardingRuleApi = (id, data = {}) =>
-  request({ url: `/admin/forwarding-rules/${id}/toggle`, method: 'PUT', data })
-export const deleteForwardingRuleApi = (id) =>
-  request({ url: `/admin/forwarding-rules/${id}`, method: 'DELETE' })
 export const getQuotaCardLimitsApi = () =>
   request({ url: '/admin/quota-cards/limits', method: 'GET' })
 export const updateQuotaCardLimitsApi = (data) =>

@@ -15,6 +15,7 @@ class OpenAIResponsesAccountService {
     // Redis 键前缀
     this.ACCOUNT_KEY_PREFIX = 'openai_responses_account:'
     this.SHARED_ACCOUNTS_KEY = 'shared_openai_responses_accounts'
+    this.VALID_PROVIDER_ENDPOINTS = ['responses', 'completions', 'auto']
 
     // 🚀 性能优化：缓存派生的加密密钥，避免每次重复计算
     this._encryptionKeyCache = null
@@ -23,7 +24,7 @@ class OpenAIResponsesAccountService {
     this._decryptCache = new LRUCache(500)
 
     // 🧹 定期清理缓存（每10分钟）
-    setInterval(
+    const cleanupTimer = setInterval(
       () => {
         this._decryptCache.cleanup()
         logger.info(
@@ -33,6 +34,43 @@ class OpenAIResponsesAccountService {
       },
       10 * 60 * 1000
     )
+    if (typeof cleanupTimer.unref === 'function') {
+      cleanupTimer.unref()
+    }
+  }
+
+  _normalizeOptionalCapability(value) {
+    if (value === undefined || value === null || value === '') {
+      return ''
+    }
+
+    if (value === true || value === false) {
+      return String(value)
+    }
+
+    const normalized = String(value).trim().toLowerCase()
+
+    if (normalized === 'true' || normalized === '1') {
+      return 'true'
+    }
+
+    if (normalized === 'false' || normalized === '0') {
+      return 'false'
+    }
+
+    return ''
+  }
+
+  _getModelMappingInput(payload = {}) {
+    if (Object.prototype.hasOwnProperty.call(payload, 'modelMapping')) {
+      return payload.modelMapping
+    }
+
+    if (Object.prototype.hasOwnProperty.call(payload, 'supportedModels')) {
+      return payload.supportedModels
+    }
+
+    return undefined
   }
 
   // 创建账户
@@ -52,7 +90,12 @@ class OpenAIResponsesAccountService {
       quotaResetTime = '00:00', // 额度重置时间（HH:mm格式）
       rateLimitDuration = 60, // 限流时间（分钟）
       disableAutoProtection = false, // 是否关闭自动防护（429/401/400/529 不自动禁用）
-      providerEndpoint = 'responses' // Provider 端点类型：responses | auto
+      providerEndpoint = 'responses', // Provider 端点类型：responses | completions | auto
+      modelMapping,
+      supportsStreaming,
+      supportsTools,
+      supportsReasoning,
+      supportsJsonSchema
     } = options
 
     // 验证必填字段
@@ -61,10 +104,9 @@ class OpenAIResponsesAccountService {
     }
 
     // 验证 providerEndpoint 枚举值
-    const validEndpoints = ['responses', 'auto']
-    if (!validEndpoints.includes(providerEndpoint)) {
+    if (!this.VALID_PROVIDER_ENDPOINTS.includes(providerEndpoint)) {
       throw new Error(
-        `Invalid providerEndpoint: ${providerEndpoint}. Must be one of: ${validEndpoints.join(', ')}`
+        `Invalid providerEndpoint: ${providerEndpoint}. Must be one of: ${this.VALID_PROVIDER_ENDPOINTS.join(', ')}`
       )
     }
 
@@ -72,6 +114,9 @@ class OpenAIResponsesAccountService {
     const normalizedBaseApi = baseApi.endsWith('/') ? baseApi.slice(0, -1) : baseApi
 
     const accountId = uuidv4()
+    const processedModelMapping = this._processModelMapping(
+      modelMapping !== undefined ? modelMapping : this._getModelMappingInput(options)
+    )
 
     const accountData = {
       id: accountId,
@@ -106,7 +151,12 @@ class OpenAIResponsesAccountService {
       quotaResetTime,
       quotaStoppedAt: '',
       disableAutoProtection: disableAutoProtection.toString(), // 关闭自动防护
-      providerEndpoint // Provider 端点类型：responses(默认) | auto
+      providerEndpoint, // Provider 端点类型：responses(默认) | completions | auto
+      modelMapping: JSON.stringify(processedModelMapping),
+      supportsStreaming: this._normalizeOptionalCapability(supportsStreaming),
+      supportsTools: this._normalizeOptionalCapability(supportsTools),
+      supportsReasoning: this._normalizeOptionalCapability(supportsReasoning),
+      supportsJsonSchema: this._normalizeOptionalCapability(supportsJsonSchema)
     }
 
     // 保存到 Redis
@@ -116,6 +166,7 @@ class OpenAIResponsesAccountService {
 
     return {
       ...accountData,
+      modelMapping: processedModelMapping,
       apiKey: '***' // 返回时隐藏敏感信息
     }
   }
@@ -141,6 +192,11 @@ class OpenAIResponsesAccountService {
         accountData.proxy = null
       }
     }
+
+    accountData.modelMapping = this._parseModelMapping(
+      accountData.modelMapping || accountData.supportedModels
+    )
+    delete accountData.supportedModels
 
     return accountData
   }
@@ -177,17 +233,33 @@ class OpenAIResponsesAccountService {
 
     // 验证 providerEndpoint 枚举值
     if (updates.providerEndpoint !== undefined) {
-      const validEndpoints = ['responses', 'auto']
-      if (!validEndpoints.includes(updates.providerEndpoint)) {
+      if (!this.VALID_PROVIDER_ENDPOINTS.includes(updates.providerEndpoint)) {
         throw new Error(
-          `Invalid providerEndpoint: ${updates.providerEndpoint}. Must be one of: ${validEndpoints.join(', ')}`
+          `Invalid providerEndpoint: ${updates.providerEndpoint}. Must be one of: ${this.VALID_PROVIDER_ENDPOINTS.join(', ')}`
         )
       }
     }
 
+    const modelMappingInput = this._getModelMappingInput(updates)
+    if (modelMappingInput !== undefined) {
+      updates.modelMapping = JSON.stringify(this._processModelMapping(modelMappingInput))
+    }
+    delete updates.supportedModels
+
     // 自动防护开关
     if (updates.disableAutoProtection !== undefined) {
       updates.disableAutoProtection = updates.disableAutoProtection.toString()
+    }
+
+    for (const field of [
+      'supportsStreaming',
+      'supportsTools',
+      'supportsReasoning',
+      'supportsJsonSchema'
+    ]) {
+      if (updates[field] !== undefined) {
+        updates[field] = this._normalizeOptionalCapability(updates[field])
+      }
     }
 
     // 更新 Redis
@@ -261,6 +333,11 @@ class OpenAIResponsesAccountService {
           accountData.proxy = null
         }
       }
+
+      accountData.modelMapping = this._parseModelMapping(
+        accountData.modelMapping || accountData.supportedModels
+      )
+      delete accountData.supportedModels
 
       // 获取限流状态信息
       const rateLimitInfo = this._getRateLimitInfo(accountData)
@@ -597,6 +674,97 @@ class OpenAIResponsesAccountService {
       remainingMinutes,
       willBeAvailableAt
     }
+  }
+
+  normalizeProviderEndpoint(providerEndpoint) {
+    return this.VALID_PROVIDER_ENDPOINTS.includes(providerEndpoint) ? providerEndpoint : 'responses'
+  }
+
+  _parseModelMapping(rawValue) {
+    if (!rawValue) {
+      return {}
+    }
+
+    if (typeof rawValue === 'object') {
+      return this._processModelMapping(rawValue)
+    }
+
+    try {
+      return this._processModelMapping(JSON.parse(rawValue))
+    } catch (error) {
+      logger.warn('Failed to parse OpenAI-Responses model mapping, fallback to empty mapping')
+      return {}
+    }
+  }
+
+  _processModelMapping(modelMapping) {
+    if (!modelMapping || (Array.isArray(modelMapping) && modelMapping.length === 0)) {
+      return {}
+    }
+
+    if (typeof modelMapping === 'object' && !Array.isArray(modelMapping)) {
+      return Object.entries(modelMapping).reduce((result, [from, to]) => {
+        if (!from || !to) {
+          return result
+        }
+
+        const normalizedFrom = String(from).trim()
+        const normalizedTo = String(to).trim()
+        if (!normalizedFrom || !normalizedTo) {
+          return result
+        }
+
+        result[normalizedFrom] = normalizedTo
+        return result
+      }, {})
+    }
+
+    if (Array.isArray(modelMapping)) {
+      const mapping = {}
+      modelMapping.forEach((model) => {
+        if (model && typeof model === 'string') {
+          const normalizedModel = model.trim()
+          if (normalizedModel) {
+            mapping[normalizedModel] = normalizedModel
+          }
+        }
+      })
+      return mapping
+    }
+
+    return {}
+  }
+
+  isModelSupported(modelMapping, requestedModel) {
+    if (!modelMapping || Object.keys(modelMapping).length === 0) {
+      return true
+    }
+
+    if (Object.prototype.hasOwnProperty.call(modelMapping, requestedModel)) {
+      return true
+    }
+
+    const requestedModelLower = String(requestedModel || '').toLowerCase()
+    return Object.keys(modelMapping).some((key) => key.toLowerCase() === requestedModelLower)
+  }
+
+  getMappedModel(modelMapping, requestedModel) {
+    if (!modelMapping || Object.keys(modelMapping).length === 0) {
+      return requestedModel
+    }
+
+    if (modelMapping[requestedModel]) {
+      return modelMapping[requestedModel]
+    }
+
+    const requestedModelLower = String(requestedModel || '').toLowerCase()
+    for (const [key, value] of Object.entries(modelMapping)) {
+      if (key.toLowerCase() === requestedModelLower) {
+        return value
+      }
+    }
+
+    return requestedModel
   }
 
   // 加密敏感数据

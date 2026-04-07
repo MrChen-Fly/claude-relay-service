@@ -78,11 +78,13 @@ class CodexCliValidator {
         return false
       }
 
-      // 5. 对于 /openai/responses 和 /azure/response 路径，额外检查 body 中的 instructions 字段
-      if (
-        req.path &&
-        (req.path.includes('/openai/responses') || req.path.includes('/azure/response'))
-      ) {
+      // 5. 仅 Responses 风格请求要求携带 Codex instructions；chat/completions 不强制。
+      const instructionProtectedPaths = [
+        '/openai/responses',
+        '/openai/v1/responses',
+        '/azure/response'
+      ]
+      if (req.path && instructionProtectedPaths.some((path) => req.path.includes(path))) {
         if (!req.body || !req.body.instructions) {
           logger.debug(`Codex CLI validation failed - missing instructions in body for ${req.path}`)
           return false
