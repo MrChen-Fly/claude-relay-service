@@ -46,6 +46,21 @@ function extractCacheCreationTokens(usageData) {
   return 0
 }
 
+function extractPromptCacheKey(...payloads) {
+  for (const payload of payloads) {
+    if (!payload || typeof payload !== 'object') {
+      continue
+    }
+
+    const rawPromptCacheKey = payload.prompt_cache_key ?? payload.promptCacheKey
+    if (typeof rawPromptCacheKey === 'string' && rawPromptCacheKey.trim()) {
+      return rawPromptCacheKey.trim()
+    }
+  }
+
+  return ''
+}
+
 function toSSE(event) {
   return `data: ${JSON.stringify(event)}\n\n`
 }
@@ -156,6 +171,7 @@ class OpenAIResponsesRelayService {
 
     return clientPayload
   }
+
   // 处理请求转发
   async handleRequest(req, res, account, apiKeyData, options = {}) {
     let abortController = null
@@ -304,6 +320,7 @@ class OpenAIResponsesRelayService {
       }
 
       const responseAdapter = this._createResponseAdapter(selectedAttempt)
+      const requestMetadata = this._buildRequestMetadata(selectedAttempt, req)
 
       if (response.status === 429) {
         const { resetsInSeconds, errorData } = await this._handle429Error(
@@ -437,6 +454,7 @@ class OpenAIResponsesRelayService {
           selectedAttempt.requestedModel || selectedAttempt.body?.model,
           handleClientDisconnect,
           req,
+          requestMetadata,
           responseAdapter,
           async () => {
             if (leaseRefreshInterval) {
@@ -486,7 +504,8 @@ class OpenAIResponsesRelayService {
         apiKeyData,
         selectedAttempt.requestedModel || selectedAttempt.body?.model,
         req._serviceTier || null,
-        responseAdapter
+        responseAdapter,
+        requestMetadata
       )
     } catch (error) {
       if (abortController && !abortController.signal.aborted) {
@@ -670,6 +689,17 @@ class OpenAIResponsesRelayService {
     return targetPath
   }
 
+  _buildRequestMetadata(selectedAttempt, req) {
+    const promptCacheKey = extractPromptCacheKey(selectedAttempt?.body, req?.body)
+    if (!promptCacheKey) {
+      return null
+    }
+
+    return {
+      promptCacheKey
+    }
+  }
+
   async _consumeErrorResponseData(response) {
     if (response.data && typeof response.data.pipe === 'function') {
       const chunks = []
@@ -811,6 +841,7 @@ class OpenAIResponsesRelayService {
     requestedModel,
     handleClientDisconnect,
     req,
+    requestMetadata = null,
     responseAdapter = null,
     onStreamFinished = null
   ) {
@@ -946,7 +977,7 @@ class OpenAIResponsesRelayService {
           const modelToRecord = actualModel || requestedModel || 'gpt-4'
 
           const serviceTier = req._serviceTier || null
-          await apiKeyService.recordUsage(
+          const usageArgs = [
             apiKeyData.id,
             actualInputTokens,
             outputTokens,
@@ -956,7 +987,12 @@ class OpenAIResponsesRelayService {
             account.id,
             'openai-responses',
             serviceTier
-          )
+          ]
+          if (requestMetadata?.promptCacheKey) {
+            usageArgs.push(requestMetadata)
+          }
+
+          await apiKeyService.recordUsage(...usageArgs)
 
           logger.info(
             `Recorded usage - Input: ${totalInputTokens}(actual:${actualInputTokens}+cached:${cacheReadTokens}), CacheCreate: ${cacheCreateTokens}, Output: ${outputTokens}, Total: ${totalTokens}, Model: ${modelToRecord}`
@@ -1053,7 +1089,8 @@ class OpenAIResponsesRelayService {
     apiKeyData,
     requestedModel,
     serviceTier = null,
-    responseAdapter = null
+    responseAdapter = null,
+    requestMetadata = null
   ) {
     const responseData = response.data
     const usageData = responseData?.usage || responseData?.response?.usage
@@ -1071,7 +1108,7 @@ class OpenAIResponsesRelayService {
         const totalTokens =
           usageData.total_tokens || totalInputTokens + outputTokens + cacheCreateTokens
 
-        await apiKeyService.recordUsage(
+        const usageArgs = [
           apiKeyData.id,
           actualInputTokens,
           outputTokens,
@@ -1081,7 +1118,12 @@ class OpenAIResponsesRelayService {
           account.id,
           'openai-responses',
           serviceTier
-        )
+        ]
+        if (requestMetadata?.promptCacheKey) {
+          usageArgs.push(requestMetadata)
+        }
+
+        await apiKeyService.recordUsage(...usageArgs)
 
         logger.info(
           `Recorded non-stream usage - Input: ${totalInputTokens}(actual:${actualInputTokens}+cached:${cacheReadTokens}), CacheCreate: ${cacheCreateTokens}, Output: ${outputTokens}, Total: ${totalTokens}, Model: ${actualModel}`

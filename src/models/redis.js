@@ -1797,6 +1797,230 @@ class RedisClient {
     }
   }
 
+  async updateUsageRecord(keyId, index, record) {
+    const listKey = `usage:records:${keyId}`
+    const client = this.getClientSafe()
+
+    try {
+      await client.lset(listKey, index, JSON.stringify(record))
+      return true
+    } catch (error) {
+      logger.error(`❌ Failed to update usage record for key ${keyId} at index ${index}:`, error)
+      return false
+    }
+  }
+
+  async backfillInferredCacheCreateTokens(
+    keyId,
+    { model = 'unknown', accountId = null, promptCacheKey = '', cacheReadTokens = 0 } = {}
+  ) {
+    const normalizedPromptCacheKey = String(promptCacheKey || '').trim()
+    const normalizedCacheReadTokens = Number.parseInt(cacheReadTokens, 10) || 0
+
+    if (!normalizedPromptCacheKey || normalizedCacheReadTokens <= 0) {
+      return null
+    }
+
+    const records = await this.getUsageRecords(keyId, 200)
+    const requestedModel = String(model || '').toLowerCase()
+    const requestedAccountId = accountId || null
+
+    for (let index = 0; index < records.length; index++) {
+      const record = records[index]
+      if (!record || record.promptCacheKey !== normalizedPromptCacheKey) {
+        continue
+      }
+
+      if (String(record.model || '').toLowerCase() !== requestedModel) {
+        continue
+      }
+
+      if ((record.accountId || null) !== requestedAccountId) {
+        continue
+      }
+
+      const existingReportedCacheCreateTokens =
+        Number.parseInt(record.reportedCacheCreateTokens ?? record.cacheCreateTokens, 10) || 0
+      const existingInferredCacheCreateTokens =
+        Number.parseInt(record.inferredCacheCreateTokens, 10) || 0
+      const existingCacheReadTokens = Number.parseInt(record.cacheReadTokens, 10) || 0
+      const existingInputTokens = Number.parseInt(record.inputTokens, 10) || 0
+
+      if (
+        existingReportedCacheCreateTokens > 0 ||
+        existingInferredCacheCreateTokens > 0 ||
+        existingCacheReadTokens > 0 ||
+        existingInputTokens <= 0
+      ) {
+        continue
+      }
+
+      const inferredCacheCreateTokens = Math.min(existingInputTokens, normalizedCacheReadTokens)
+      if (inferredCacheCreateTokens <= 0) {
+        continue
+      }
+
+      const updatedRecord = {
+        ...record,
+        inputTokens: existingInputTokens - inferredCacheCreateTokens,
+        cacheCreateTokens: existingReportedCacheCreateTokens + inferredCacheCreateTokens,
+        reportedCacheCreateTokens: existingReportedCacheCreateTokens,
+        inferredCacheCreateTokens,
+        cacheCreateInferenceSource: 'prompt_cache_key',
+        cacheCreateBackfilledAt: new Date().toISOString()
+      }
+
+      const updated = await this.updateUsageRecord(keyId, index, updatedRecord)
+      if (!updated) {
+        return null
+      }
+
+      await this.reclassifyHistoricalUsageTokens({
+        keyId,
+        accountId: record.accountId || null,
+        model: record.model || model,
+        timestamp: record.timestamp,
+        inputToCacheCreateTokens: inferredCacheCreateTokens
+      })
+
+      return {
+        matchedRecordIndex: index,
+        matchedRecordTimestamp: record.timestamp || null,
+        inferredCacheCreateTokens
+      }
+    }
+
+    return null
+  }
+
+  async reclassifyHistoricalUsageTokens({
+    keyId,
+    accountId = null,
+    model = 'unknown',
+    timestamp,
+    inputToCacheCreateTokens = 0
+  } = {}) {
+    const delta = Number.parseInt(inputToCacheCreateTokens, 10) || 0
+    if (!keyId || delta <= 0) {
+      return false
+    }
+
+    const eventTime = timestamp ? new Date(timestamp) : new Date()
+    if (Number.isNaN(eventTime.getTime())) {
+      return false
+    }
+
+    const dayKey = getDateStringInTimezone(eventTime)
+    const tzDate = getDateInTimezone(eventTime)
+    const monthKey = `${tzDate.getUTCFullYear()}-${String(tzDate.getUTCMonth() + 1).padStart(2, '0')}`
+    const hourKey = `${dayKey}:${String(getHourInTimezone(eventTime)).padStart(2, '0')}`
+    const minuteKey = `system:metrics:minute:${Math.floor(eventTime.getTime() / 60000)}`
+    const normalizedModel = this._normalizeModelName(model)
+    const client = this.getClientSafe()
+    const pipeline = client.pipeline()
+
+    const usageKey = `usage:${keyId}`
+    const usageDailyKey = `usage:daily:${keyId}:${dayKey}`
+    const usageMonthlyKey = `usage:monthly:${keyId}:${monthKey}`
+    const usageHourlyKey = `usage:hourly:${keyId}:${hourKey}`
+    const modelDailyKey = `usage:model:daily:${normalizedModel}:${dayKey}`
+    const modelMonthlyKey = `usage:model:monthly:${normalizedModel}:${monthKey}`
+    const modelHourlyKey = `usage:model:hourly:${normalizedModel}:${hourKey}`
+    const keyModelDailyKey = `usage:${keyId}:model:daily:${normalizedModel}:${dayKey}`
+    const keyModelMonthlyKey = `usage:${keyId}:model:monthly:${normalizedModel}:${monthKey}`
+    const keyModelHourlyKey = `usage:${keyId}:model:hourly:${normalizedModel}:${hourKey}`
+    const keyModelAlltimeKey = `usage:${keyId}:model:alltime:${normalizedModel}`
+    const globalDailyKey = `usage:global:daily:${dayKey}`
+    const globalMonthlyKey = `usage:global:monthly:${monthKey}`
+
+    pipeline.hincrby(usageKey, 'totalTokens', -delta)
+    pipeline.hincrby(usageKey, 'totalInputTokens', -delta)
+    pipeline.hincrby(usageKey, 'totalCacheCreateTokens', delta)
+
+    pipeline.hincrby(usageDailyKey, 'tokens', -delta)
+    pipeline.hincrby(usageDailyKey, 'inputTokens', -delta)
+    pipeline.hincrby(usageDailyKey, 'cacheCreateTokens', delta)
+
+    pipeline.hincrby(usageMonthlyKey, 'tokens', -delta)
+    pipeline.hincrby(usageMonthlyKey, 'inputTokens', -delta)
+    pipeline.hincrby(usageMonthlyKey, 'cacheCreateTokens', delta)
+
+    pipeline.hincrby(usageHourlyKey, 'tokens', -delta)
+    pipeline.hincrby(usageHourlyKey, 'inputTokens', -delta)
+    pipeline.hincrby(usageHourlyKey, 'cacheCreateTokens', delta)
+
+    pipeline.hincrby(modelDailyKey, 'inputTokens', -delta)
+    pipeline.hincrby(modelDailyKey, 'cacheCreateTokens', delta)
+
+    pipeline.hincrby(modelMonthlyKey, 'inputTokens', -delta)
+    pipeline.hincrby(modelMonthlyKey, 'cacheCreateTokens', delta)
+
+    pipeline.hincrby(modelHourlyKey, 'inputTokens', -delta)
+    pipeline.hincrby(modelHourlyKey, 'cacheCreateTokens', delta)
+
+    pipeline.hincrby(keyModelDailyKey, 'inputTokens', -delta)
+    pipeline.hincrby(keyModelDailyKey, 'cacheCreateTokens', delta)
+
+    pipeline.hincrby(keyModelMonthlyKey, 'inputTokens', -delta)
+    pipeline.hincrby(keyModelMonthlyKey, 'cacheCreateTokens', delta)
+
+    pipeline.hincrby(keyModelHourlyKey, 'inputTokens', -delta)
+    pipeline.hincrby(keyModelHourlyKey, 'cacheCreateTokens', delta)
+
+    pipeline.hincrby(keyModelAlltimeKey, 'inputTokens', -delta)
+    pipeline.hincrby(keyModelAlltimeKey, 'cacheCreateTokens', delta)
+
+    pipeline.hincrby(minuteKey, 'inputTokens', -delta)
+    pipeline.hincrby(minuteKey, 'cacheCreateTokens', delta)
+
+    pipeline.hincrby('usage:global:total', 'inputTokens', -delta)
+    pipeline.hincrby('usage:global:total', 'cacheCreateTokens', delta)
+    pipeline.hincrby(globalDailyKey, 'inputTokens', -delta)
+    pipeline.hincrby(globalDailyKey, 'cacheCreateTokens', delta)
+    pipeline.hincrby(globalMonthlyKey, 'inputTokens', -delta)
+    pipeline.hincrby(globalMonthlyKey, 'cacheCreateTokens', delta)
+
+    if (accountId) {
+      const accountKey = `account_usage:${accountId}`
+      const accountDailyKey = `account_usage:daily:${accountId}:${dayKey}`
+      const accountMonthlyKey = `account_usage:monthly:${accountId}:${monthKey}`
+      const accountHourlyKey = `account_usage:hourly:${accountId}:${hourKey}`
+      const accountModelDailyKey = `account_usage:model:daily:${accountId}:${normalizedModel}:${dayKey}`
+      const accountModelMonthlyKey = `account_usage:model:monthly:${accountId}:${normalizedModel}:${monthKey}`
+      const accountModelHourlyKey = `account_usage:model:hourly:${accountId}:${normalizedModel}:${hourKey}`
+
+      pipeline.hincrby(accountKey, 'totalTokens', -delta)
+      pipeline.hincrby(accountKey, 'totalInputTokens', -delta)
+      pipeline.hincrby(accountKey, 'totalCacheCreateTokens', delta)
+
+      pipeline.hincrby(accountDailyKey, 'tokens', -delta)
+      pipeline.hincrby(accountDailyKey, 'inputTokens', -delta)
+      pipeline.hincrby(accountDailyKey, 'cacheCreateTokens', delta)
+
+      pipeline.hincrby(accountMonthlyKey, 'tokens', -delta)
+      pipeline.hincrby(accountMonthlyKey, 'inputTokens', -delta)
+      pipeline.hincrby(accountMonthlyKey, 'cacheCreateTokens', delta)
+
+      pipeline.hincrby(accountHourlyKey, 'tokens', -delta)
+      pipeline.hincrby(accountHourlyKey, 'inputTokens', -delta)
+      pipeline.hincrby(accountHourlyKey, 'cacheCreateTokens', delta)
+      pipeline.hincrby(accountHourlyKey, `model:${normalizedModel}:inputTokens`, -delta)
+      pipeline.hincrby(accountHourlyKey, `model:${normalizedModel}:cacheCreateTokens`, delta)
+
+      pipeline.hincrby(accountModelDailyKey, 'inputTokens', -delta)
+      pipeline.hincrby(accountModelDailyKey, 'cacheCreateTokens', delta)
+
+      pipeline.hincrby(accountModelMonthlyKey, 'inputTokens', -delta)
+      pipeline.hincrby(accountModelMonthlyKey, 'cacheCreateTokens', delta)
+
+      pipeline.hincrby(accountModelHourlyKey, 'inputTokens', -delta)
+      pipeline.hincrby(accountModelHourlyKey, 'cacheCreateTokens', delta)
+    }
+
+    await pipeline.exec()
+    return true
+  }
+
   // 💰 获取当日费用
   async getDailyCost(keyId) {
     const today = getDateStringInTimezone()
@@ -3926,6 +4150,7 @@ redisClient.acquireOpenAIL1CacheLock = async function (lockKey, lockValue, ttlMs
 redisClient.releaseOpenAIL1CacheLock = async function (lockKey, lockValue) {
   return await this.releaseAccountLock(lockKey, lockValue)
 }
+
 // 分布式锁相关方法
 redisClient.setAccountLock = async function (lockKey, lockValue, ttlMs) {
   try {

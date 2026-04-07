@@ -1527,6 +1527,71 @@ class ApiKeyService {
   }
 
   // 📊 记录使用情况（支持缓存token和账户级别统计，应用服务倍率）
+  _normalizeRequestMetadata(requestMetadata = null) {
+    if (!requestMetadata || typeof requestMetadata !== 'object') {
+      return {
+        promptCacheKey: ''
+      }
+    }
+
+    const rawPromptCacheKey =
+      requestMetadata.promptCacheKey ?? requestMetadata.prompt_cache_key ?? ''
+
+    return {
+      promptCacheKey: typeof rawPromptCacheKey === 'string' ? rawPromptCacheKey.trim() : ''
+    }
+  }
+
+  async _maybeBackfillInferredCacheCreateTokens({
+    keyId,
+    model,
+    accountId,
+    accountType,
+    cacheCreateTokens,
+    cacheReadTokens,
+    promptCacheKey
+  }) {
+    if (accountType !== 'openai-responses') {
+      return null
+    }
+
+    if (typeof redis.backfillInferredCacheCreateTokens !== 'function') {
+      return null
+    }
+
+    const normalizedPromptCacheKey = typeof promptCacheKey === 'string' ? promptCacheKey.trim() : ''
+    const normalizedCacheReadTokens = Number.parseInt(cacheReadTokens, 10) || 0
+    const normalizedCacheCreateTokens = Number.parseInt(cacheCreateTokens, 10) || 0
+
+    if (
+      !normalizedPromptCacheKey ||
+      normalizedCacheReadTokens <= 0 ||
+      normalizedCacheCreateTokens > 0
+    ) {
+      return null
+    }
+
+    try {
+      const backfillResult = await redis.backfillInferredCacheCreateTokens(keyId, {
+        model,
+        accountId,
+        promptCacheKey: normalizedPromptCacheKey,
+        cacheReadTokens: normalizedCacheReadTokens
+      })
+
+      if (backfillResult?.inferredCacheCreateTokens > 0) {
+        logger.database(
+          `Prompt cache backfilled cacheCreateTokens for ${keyId}: +${backfillResult.inferredCacheCreateTokens} (model: ${model}, account: ${accountId || 'unknown'})`
+        )
+      }
+
+      return backfillResult
+    } catch (error) {
+      logger.warn(`Failed to backfill inferred cacheCreateTokens for ${keyId}: ${error.message}`)
+      return null
+    }
+  }
+
   async recordUsage(
     keyId,
     inputTokens = 0,
@@ -1536,10 +1601,13 @@ class ApiKeyService {
     model = 'unknown',
     accountId = null,
     accountType = null,
-    serviceTier = null
+    serviceTier = null,
+    requestMetadata = null
   ) {
     try {
       const totalTokens = inputTokens + outputTokens + cacheCreateTokens + cacheReadTokens
+      const normalizedRequestMetadata = this._normalizeRequestMetadata(requestMetadata)
+      const reportedCacheCreateTokens = Number.parseInt(cacheCreateTokens, 10) || 0
 
       // 计算费用
       const CostCalculator = require('../utils/costCalculator')
@@ -1639,15 +1707,28 @@ class ApiKeyService {
       }
 
       // 记录单次请求的使用详情（同时保存真实成本和倍率成本）
+      await this._maybeBackfillInferredCacheCreateTokens({
+        keyId,
+        model,
+        accountId,
+        accountType,
+        cacheCreateTokens: reportedCacheCreateTokens,
+        cacheReadTokens,
+        promptCacheKey: normalizedRequestMetadata.promptCacheKey
+      })
+
       await redis.addUsageRecord(keyId, {
         timestamp: new Date().toISOString(),
         model,
         accountId: accountId || null,
         accountType: accountType || null,
+        promptCacheKey: normalizedRequestMetadata.promptCacheKey || null,
         inputTokens,
         outputTokens,
         cacheCreateTokens,
         cacheReadTokens,
+        reportedCacheCreateTokens,
+        inferredCacheCreateTokens: 0,
         totalTokens,
         cost: Number(ratedCost.toFixed(6)),
         realCost: Number(realCost.toFixed(6)),
