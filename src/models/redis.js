@@ -3871,6 +3871,61 @@ class RedisClient {
 
 const redisClient = new RedisClient()
 
+redisClient.getOpenAIL1CacheEntry = async function (cacheKey) {
+  try {
+    const client = this.getClient()
+    if (!client) {
+      return null
+    }
+
+    const rawValue = await client.get(cacheKey)
+    if (!rawValue) {
+      return null
+    }
+
+    return JSON.parse(rawValue)
+  } catch (error) {
+    logger.error(`Failed to read OpenAI L1 cache entry ${cacheKey}:`, error)
+    return null
+  }
+}
+
+redisClient.setOpenAIL1CacheEntry = async function (cacheKey, payload, ttlSeconds) {
+  try {
+    const client = this.getClient()
+    if (!client) {
+      return false
+    }
+
+    await client.set(cacheKey, JSON.stringify(payload), 'EX', ttlSeconds)
+    return true
+  } catch (error) {
+    logger.error(`Failed to write OpenAI L1 cache entry ${cacheKey}:`, error)
+    return false
+  }
+}
+
+redisClient.incrementOpenAIL1CacheMetric = async function (metricName) {
+  try {
+    const client = this.getClient()
+    if (!client) {
+      return 0
+    }
+
+    return await client.hincrby('metrics:openai:l1', metricName, 1)
+  } catch (error) {
+    logger.error(`Failed to increment OpenAI L1 cache metric ${metricName}:`, error)
+    return 0
+  }
+}
+
+redisClient.acquireOpenAIL1CacheLock = async function (lockKey, lockValue, ttlMs) {
+  return await this.setAccountLock(lockKey, lockValue, ttlMs)
+}
+
+redisClient.releaseOpenAIL1CacheLock = async function (lockKey, lockValue) {
+  return await this.releaseAccountLock(lockKey, lockValue)
+}
 // 分布式锁相关方法
 redisClient.setAccountLock = async function (lockKey, lockValue, ttlMs) {
   try {

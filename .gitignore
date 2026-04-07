@@ -233,6 +233,8 @@ files/
 # Cache directories
 .cache/
 cache/
+!src/services/cache/
+!src/services/cache/openaiL1CacheService.js
 
 # Build artifacts
 build/

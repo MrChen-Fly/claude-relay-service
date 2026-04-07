@@ -7,6 +7,7 @@ const azureOpenaiRelayService = require('../services/relay/azureOpenaiRelayServi
 const apiKeyService = require('../services/apiKeyService')
 const crypto = require('crypto')
 const upstreamErrorHelper = require('../utils/upstreamErrorHelper')
+const openaiL1CacheService = require('../services/cache/openaiL1CacheService')
 
 // 支持的模型列表 - 基于真实的 Azure OpenAI 模型
 const ALLOWED_MODELS = {
@@ -62,8 +63,14 @@ class AtomicUsageReporter {
       return result
     } finally {
       this.pendingReports.delete(requestId)
-      // 清理过期的已报告记录
-      setTimeout(() => this.reportedUsage.delete(requestId), 60 * 1000) // 1分钟后清理
+      const cleanupTimer = setTimeout(() => this.reportedUsage.delete(requestId), 60 * 1000)
+      if (typeof cleanupTimer?.unref === 'function') {
+        cleanupTimer.unref()
+      }
+      if (!cleanupTimer) {
+        // 清理过期的已报告记录
+        setTimeout(() => this.reportedUsage.delete(requestId), 60 * 1000) // 1分钟后清理
+      }
     }
   }
 
@@ -117,6 +124,38 @@ class AtomicUsageReporter {
 
 const usageReporter = new AtomicUsageReporter()
 
+async function beginAzureCacheRequest(req, endpoint) {
+  return openaiL1CacheService.beginRequest({
+    tenantId: req.apiKey?.id,
+    provider: 'azure-openai',
+    endpoint,
+    requestBody: req.body,
+    requestHeaders: req.headers,
+    resolvedModel: req.body?.model || null,
+    isStream: req.body?.stream === true
+  })
+}
+
+async function maybeReplayAzureCache(req, res, endpoint) {
+  const cacheDecision = await beginAzureCacheRequest(req, endpoint)
+  if (cacheDecision.kind === 'hit') {
+    openaiL1CacheService.replayCachedResponse(res, cacheDecision.entry)
+    return { handled: true, cacheDecision }
+  }
+
+  return { handled: false, cacheDecision }
+}
+
+async function maybeStoreAzureCache(cacheDecision, response, result) {
+  await openaiL1CacheService.storeResponse(cacheDecision, {
+    statusCode: response.status,
+    body: result?.responseData || response.data,
+    headers: response.headers,
+    actualModel: result?.actualModel || null,
+    usage: result?.usageData || null
+  })
+}
+
 // 健康检查
 router.get('/health', (req, res) => {
   res.status(200).json({
@@ -150,6 +189,7 @@ router.get('/models', authenticateApiKey, async (req, res) => {
 router.post('/chat/completions', authenticateApiKey, async (req, res) => {
   const requestId = `azure_req_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`
   const sessionId = req.sessionId || req.headers['x-session-id'] || null
+  let cacheDecision = null
 
   logger.info(`🚀 Azure OpenAI Chat Request ${requestId}`, {
     apiKeyId: req.apiKey?.id,
@@ -160,6 +200,12 @@ router.post('/chat/completions', authenticateApiKey, async (req, res) => {
   })
 
   try {
+    const cacheState = await maybeReplayAzureCache(req, res, 'chat/completions')
+    ;({ cacheDecision } = cacheState)
+    if (cacheState.handled) {
+      return
+    }
+
     // 获取绑定的 Azure OpenAI 账户
     let account = null
     if (req.apiKey?.azureOpenaiAccountId) {
@@ -232,10 +278,9 @@ router.post('/chat/completions', authenticateApiKey, async (req, res) => {
       })
     } else {
       // 处理非流式响应
-      const { usageData, actualModel } = azureOpenaiRelayService.handleNonStreamResponse(
-        response,
-        res
-      )
+      const { usageData, actualModel, responseData } =
+        azureOpenaiRelayService.handleNonStreamResponse(response, res)
+      await maybeStoreAzureCache(cacheDecision, response, { usageData, actualModel, responseData })
 
       if (usageData) {
         const modelToRecord = actualModel || req.body.model || 'unknown'
@@ -264,6 +309,8 @@ router.post('/chat/completions', authenticateApiKey, async (req, res) => {
         }
       })
     }
+  } finally {
+    await openaiL1CacheService.finalizeRequest(cacheDecision)
   }
 })
 
@@ -271,6 +318,7 @@ router.post('/chat/completions', authenticateApiKey, async (req, res) => {
 router.post('/responses', authenticateApiKey, async (req, res) => {
   const requestId = `azure_resp_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`
   const sessionId = req.sessionId || req.headers['x-session-id'] || null
+  let cacheDecision = null
 
   logger.info(`🚀 Azure OpenAI Responses Request ${requestId}`, {
     apiKeyId: req.apiKey?.id,
@@ -281,6 +329,12 @@ router.post('/responses', authenticateApiKey, async (req, res) => {
   })
 
   try {
+    const cacheState = await maybeReplayAzureCache(req, res, 'responses')
+    ;({ cacheDecision } = cacheState)
+    if (cacheState.handled) {
+      return
+    }
+
     // 获取绑定的 Azure OpenAI 账户
     let account = null
     if (req.apiKey?.azureOpenaiAccountId) {
@@ -353,10 +407,9 @@ router.post('/responses', authenticateApiKey, async (req, res) => {
       })
     } else {
       // 处理非流式响应
-      const { usageData, actualModel } = azureOpenaiRelayService.handleNonStreamResponse(
-        response,
-        res
-      )
+      const { usageData, actualModel, responseData } =
+        azureOpenaiRelayService.handleNonStreamResponse(response, res)
+      await maybeStoreAzureCache(cacheDecision, response, { usageData, actualModel, responseData })
 
       if (usageData) {
         const modelToRecord = actualModel || req.body.model || 'unknown'
@@ -385,6 +438,8 @@ router.post('/responses', authenticateApiKey, async (req, res) => {
         }
       })
     }
+  } finally {
+    await openaiL1CacheService.finalizeRequest(cacheDecision)
   }
 })
 
@@ -392,6 +447,7 @@ router.post('/responses', authenticateApiKey, async (req, res) => {
 router.post('/embeddings', authenticateApiKey, async (req, res) => {
   const requestId = `azure_embed_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`
   const sessionId = req.sessionId || req.headers['x-session-id'] || null
+  let cacheDecision = null
 
   logger.info(`🚀 Azure OpenAI Embeddings Request ${requestId}`, {
     apiKeyId: req.apiKey?.id,
@@ -401,6 +457,12 @@ router.post('/embeddings', authenticateApiKey, async (req, res) => {
   })
 
   try {
+    const cacheState = await maybeReplayAzureCache(req, res, 'embeddings')
+    ;({ cacheDecision } = cacheState)
+    if (cacheState.handled) {
+      return
+    }
+
     // 获取绑定的 Azure OpenAI 账户
     let account = null
     if (req.apiKey?.azureOpenaiAccountId) {
@@ -453,10 +515,9 @@ router.post('/embeddings', authenticateApiKey, async (req, res) => {
     }
 
     // 处理响应
-    const { usageData, actualModel } = azureOpenaiRelayService.handleNonStreamResponse(
-      response,
-      res
-    )
+    const { usageData, actualModel, responseData } =
+      azureOpenaiRelayService.handleNonStreamResponse(response, res)
+    await maybeStoreAzureCache(cacheDecision, response, { usageData, actualModel, responseData })
 
     if (usageData) {
       const modelToRecord = actualModel || req.body.model || 'unknown'
@@ -478,6 +539,8 @@ router.post('/embeddings', authenticateApiKey, async (req, res) => {
         }
       })
     }
+  } finally {
+    await openaiL1CacheService.finalizeRequest(cacheDecision)
   }
 })
 

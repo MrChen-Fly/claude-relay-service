@@ -14,6 +14,7 @@ const { IncrementalSSEParser } = require('../../utils/sseParser')
 const ChatToResponsesConverter = require('../openaiProtocol/chatToResponsesConverter')
 const CodexToOpenAIConverter = require('../codexToOpenAI')
 const redis = require('../../models/redis')
+const openaiL1CacheService = require('../cache/openaiL1CacheService')
 
 // lastUsedAt 更新节流（每账户 60 秒内最多更新一次，使用 LRU 防止内存泄漏）
 const lastUsedAtThrottle = new LRUCache(1000) // 最多缓存 1000 个账户
@@ -134,6 +135,27 @@ class OpenAIResponsesRelayService {
     return interval
   }
 
+  _getCacheEndpointFromPath(pathname = '') {
+    return (
+      String(pathname || '')
+        .replace(/^\/v1\//, '')
+        .replace(/^\//, '')
+        .trim() || 'responses'
+    )
+  }
+
+  _buildClientPayload(responseData, responseAdapter = null) {
+    let clientPayload = responseData
+    if (responseAdapter?.convertJson) {
+      try {
+        clientPayload = responseAdapter.convertJson(responseData)
+      } catch (error) {
+        logger.error('Failed to transform non-stream response:', error)
+      }
+    }
+
+    return clientPayload
+  }
   // 处理请求转发
   async handleRequest(req, res, account, apiKeyData, options = {}) {
     let abortController = null
@@ -141,6 +163,7 @@ class OpenAIResponsesRelayService {
     let concurrencyAcquired = false
     let leaseRefreshInterval = null
     let releaseConcurrencyInFinally = true
+    let cacheDecision = null
     const sessionId = req.headers['session_id'] || req.body?.session_id
     const sessionHash = sessionId
       ? crypto.createHash('sha256').update(sessionId).digest('hex')
@@ -166,6 +189,29 @@ class OpenAIResponsesRelayService {
 
       const attempts = this._buildAttempts(req, options)
       const isStreamRequest = attempts.some((attempt) => !!attempt.body?.stream)
+      const primaryAttempt = attempts[0] || {}
+      const cacheRequestedModel =
+        primaryAttempt.requestedModel || primaryAttempt.body?.model || req.body?.model || null
+      const cacheResolvedModel = openaiResponsesAccountService.getMappedModel(
+        fullAccount.modelMapping || fullAccount.supportedModels,
+        cacheRequestedModel
+      )
+
+      cacheDecision = await openaiL1CacheService.beginRequest({
+        tenantId: apiKeyData?.id,
+        provider: 'openai-responses',
+        endpoint: this._getCacheEndpointFromPath(req.path),
+        requestBody: req.body,
+        requestHeaders: req.headers,
+        resolvedModel: cacheResolvedModel,
+        isStream: isStreamRequest
+      })
+      if (cacheDecision.kind === 'hit') {
+        req.removeListener('close', handleClientDisconnect)
+        res.removeListener('close', handleClientDisconnect)
+        return openaiL1CacheService.replayCachedResponse(res, cacheDecision.entry)
+      }
+
       concurrencyAcquired = await this._acquireConcurrencySlot(fullAccount, requestId, {
         isStream: isStreamRequest
       })
@@ -414,6 +460,25 @@ class OpenAIResponsesRelayService {
         )
       }
 
+      if (cacheDecision?.kind === 'miss') {
+        const responseData = response.data
+        const usageData = responseData?.usage || responseData?.response?.usage || null
+        const actualModel =
+          responseData?.model ||
+          responseData?.response?.model ||
+          selectedAttempt.requestedModel ||
+          selectedAttempt.body?.model ||
+          null
+
+        await openaiL1CacheService.storeResponse(cacheDecision, {
+          statusCode: response.status,
+          body: this._buildClientPayload(responseData, responseAdapter),
+          headers: response.headers,
+          actualModel,
+          usage: usageData
+        })
+      }
+
       return this._handleNormalResponse(
         response,
         res,
@@ -540,6 +605,12 @@ class OpenAIResponsesRelayService {
         }
       })
     } finally {
+      try {
+        await openaiL1CacheService.finalizeRequest(cacheDecision)
+      } catch (cacheError) {
+        logger.error('Failed to finalize OpenAI-Responses cache request:', cacheError)
+      }
+
       if (releaseConcurrencyInFinally) {
         if (leaseRefreshInterval) {
           clearInterval(leaseRefreshInterval)
