@@ -21,6 +21,8 @@ function getSettings() {
   return {
     enabled: config.openaiCache?.l2?.enabled !== false,
     shadowMode: config.openaiCache?.l2?.shadowMode !== false,
+    embeddingBaseUrl: normalizeBaseApi(config.openaiCache?.l2?.embeddingBaseUrl || ''),
+    embeddingApiKey: config.openaiCache?.l2?.embeddingApiKey || '',
     embeddingModel: config.openaiCache?.l2?.embeddingModel || 'text-embedding-3-small',
     similarityThreshold:
       typeof config.openaiCache?.l2?.similarityThreshold === 'number'
@@ -57,6 +59,20 @@ function normalizeText(text) {
   }
 
   return text.replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * Normalizes an embedding API base URL by trimming whitespace and trailing slashes.
+ *
+ * @param {string} baseApi - Raw base URL from config or account.
+ * @returns {string} Normalized base URL.
+ */
+function normalizeBaseApi(baseApi) {
+  if (typeof baseApi !== 'string') {
+    return ''
+  }
+
+  return baseApi.trim().replace(/\/+$/, '')
 }
 
 function mapMessageRole(role) {
@@ -97,6 +113,53 @@ function buildEntryKey(tenantId, entryId) {
 
 function buildIndexKey(tenantId) {
   return `cache:openai:l2:index:${CACHE_VERSION}:${tenantId}`
+}
+
+/**
+ * Resolves the embedding endpoint configuration for semantic cache requests.
+ *
+ * @param {Object} context - Request cache context.
+ * @param {Object} settings - L2 cache settings.
+ * @returns {Object} Effective embedding target configuration.
+ */
+function resolveEmbeddingTarget(context = {}, settings = {}) {
+  const configuredBaseApi = normalizeBaseApi(settings.embeddingBaseUrl)
+  const accountBaseApi = normalizeBaseApi(context.fullAccount?.baseApi || '')
+  const userAgent =
+    context.fullAccount?.userAgent || context.requestHeaders?.['user-agent'] || undefined
+
+  if (configuredBaseApi) {
+    return {
+      source: 'configured',
+      baseApi: configuredBaseApi,
+      apiKey: settings.embeddingApiKey || '',
+      proxy: context.fullAccount?.proxy,
+      userAgent
+    }
+  }
+
+  return {
+    source: 'account',
+    baseApi: accountBaseApi,
+    apiKey: context.fullAccount?.apiKey || '',
+    proxy: context.fullAccount?.proxy,
+    userAgent
+  }
+}
+
+/**
+ * Builds a stable identity string for an embedding provider configuration.
+ *
+ * @param {Object} target - Effective embedding target configuration.
+ * @param {string} embeddingModel - Embedding model name.
+ * @returns {string} Stable source fingerprint payload.
+ */
+function buildEmbeddingSource(target = {}, embeddingModel = '') {
+  return createHash({
+    source: target.source || 'account',
+    baseApi: normalizeBaseApi(target.baseApi || '').toLowerCase(),
+    embeddingModel
+  })
 }
 
 function pickReplayHeaders(headers = {}) {
@@ -256,15 +319,18 @@ function normalizeTargetPath(baseApi, targetPath) {
   return targetPath
 }
 
-function buildEmbeddingHeaders(requestHeaders, account) {
+function buildEmbeddingHeaders(requestHeaders, target) {
   const headers = {
     ...filterForOpenAI(requestHeaders || {}),
-    Authorization: `Bearer ${account.apiKey}`,
     'Content-Type': 'application/json'
   }
 
-  if (account.userAgent) {
-    headers['User-Agent'] = account.userAgent
+  if (target.apiKey) {
+    headers.Authorization = `Bearer ${target.apiKey}`
+  }
+
+  if (target.userAgent) {
+    headers['User-Agent'] = target.userAgent
   } else if (requestHeaders?.['user-agent']) {
     headers['User-Agent'] = requestHeaders['user-agent']
   }
@@ -287,6 +353,7 @@ async function incrementMetric(name) {
  */
 function buildCachePlan(context = {}) {
   const settings = getSettings()
+  const embeddingTarget = resolveEmbeddingTarget(context, settings)
 
   if (!settings.enabled) {
     return { cacheable: false, reason: 'cache_disabled' }
@@ -300,7 +367,11 @@ function buildCachePlan(context = {}) {
     return { cacheable: false, reason: 'missing_tenant' }
   }
 
-  if (!context.fullAccount?.baseApi || !context.fullAccount?.apiKey) {
+  if (!embeddingTarget.baseApi) {
+    return { cacheable: false, reason: 'missing_embedding_base_api' }
+  }
+
+  if (embeddingTarget.source === 'account' && !embeddingTarget.apiKey) {
     return { cacheable: false, reason: 'missing_account_credentials' }
   }
 
@@ -339,8 +410,9 @@ function buildCachePlan(context = {}) {
     return { cacheable: false, reason: 'text_too_long' }
   }
 
+  const embeddingSource = buildEmbeddingSource(embeddingTarget, settings.embeddingModel)
   const textHash = createHash({
-    embeddingModel: settings.embeddingModel,
+    embeddingSource,
     text: semanticText.text
   })
 
@@ -351,6 +423,11 @@ function buildCachePlan(context = {}) {
     model,
     provider: context.provider || 'openai-responses',
     shadowMode: settings.shadowMode,
+    embeddingSource,
+    embeddingBaseUrl: embeddingTarget.baseApi,
+    embeddingApiKey: embeddingTarget.apiKey,
+    embeddingProxy: embeddingTarget.proxy,
+    embeddingUserAgent: embeddingTarget.userAgent,
     embeddingModel: settings.embeddingModel,
     similarityThreshold: settings.similarityThreshold,
     entryTtlSeconds: settings.entryTtlSeconds,
@@ -367,11 +444,14 @@ function buildCachePlan(context = {}) {
 }
 
 async function requestEmbedding(context, plan) {
-  const targetPath = normalizeTargetPath(context.fullAccount.baseApi || '', '/v1/embeddings')
+  const targetPath = normalizeTargetPath(plan.embeddingBaseUrl || '', '/v1/embeddings')
   const requestOptions = {
     method: 'POST',
-    url: `${context.fullAccount.baseApi || ''}${targetPath}`,
-    headers: buildEmbeddingHeaders(context.requestHeaders, context.fullAccount),
+    url: `${plan.embeddingBaseUrl || ''}${targetPath}`,
+    headers: buildEmbeddingHeaders(context.requestHeaders, {
+      apiKey: plan.embeddingApiKey,
+      userAgent: plan.embeddingUserAgent
+    }),
     data: {
       model: plan.embeddingModel,
       input: plan.queryText
@@ -380,8 +460,8 @@ async function requestEmbedding(context, plan) {
     validateStatus: () => true
   }
 
-  if (context.fullAccount.proxy) {
-    const proxyAgent = ProxyHelper.createProxyAgent(context.fullAccount.proxy)
+  if (plan.embeddingProxy) {
+    const proxyAgent = ProxyHelper.createProxyAgent(plan.embeddingProxy)
     if (proxyAgent) {
       requestOptions.httpAgent = proxyAgent
       requestOptions.httpsAgent = proxyAgent
@@ -473,7 +553,12 @@ async function beginRequest(context = {}) {
   const candidates = []
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index]
-    if (!entry || entry.model !== plan.model || !entry.textHash) {
+    if (
+      !entry ||
+      entry.model !== plan.model ||
+      !entry.textHash ||
+      entry.embeddingSource !== plan.embeddingSource
+    ) {
       continue
     }
 
@@ -587,6 +672,7 @@ async function storeResponse(decision, responseContext = {}) {
     endpoint: decision.endpoint,
     model: decision.model,
     textHash: decision.textHash,
+    embeddingSource: decision.embeddingSource,
     requestText: decision.queryText,
     responseText: extractResponseText(responseContext.body),
     embeddingModel: decision.embeddingModel,

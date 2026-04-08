@@ -118,6 +118,8 @@ const config = {
     l2: {
       enabled: process.env.OPENAI_L2_CACHE_ENABLED !== 'false',
       shadowMode: process.env.OPENAI_L2_CACHE_SHADOW_MODE !== 'false',
+      embeddingBaseUrl: process.env.OPENAI_L2_CACHE_EMBEDDING_BASE_URL || '',
+      embeddingApiKey: process.env.OPENAI_L2_CACHE_EMBEDDING_API_KEY || '',
       embeddingModel: process.env.OPENAI_L2_CACHE_EMBEDDING_MODEL || 'text-embedding-3-small',
       similarityThreshold:
         process.env.OPENAI_L2_CACHE_SIMILARITY_THRESHOLD !== undefined &&

@@ -125,7 +125,7 @@ describe('admin dashboard cache metrics', () => {
       l2: {
         enabled: true,
         shadowMode: true,
-        embeddingModel: 'text-embedding-3-small',
+        embeddingModel: 'BAAI/bge-m3',
         similarityThreshold: 0.95,
         counters: {
           cache_hit_semantic: 0,

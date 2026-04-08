@@ -67,6 +67,8 @@ describe('openaiL2SemanticCacheService', () => {
       l2: {
         enabled: true,
         shadowMode: true,
+        embeddingBaseUrl: '',
+        embeddingApiKey: '',
         embeddingModel: 'text-embedding-3-small',
         similarityThreshold: 0.95,
         entryTtlSeconds: 604800,
@@ -112,6 +114,8 @@ describe('openaiL2SemanticCacheService', () => {
   })
 
   it('returns a shadow hit when the best candidate exceeds the similarity threshold', async () => {
+    const plan = openaiL2SemanticCacheService.buildCachePlan(baseContext)
+
     redis.getOpenAIL2Embedding.mockResolvedValue({
       vector: [1, 0]
     })
@@ -120,6 +124,7 @@ describe('openaiL2SemanticCacheService', () => {
       {
         model: 'gpt-5',
         textHash: 'candidate-hash',
+        embeddingSource: plan.embeddingSource,
         requestText: 'system: You are helpful.\nuser: hello world',
         meta: {
           createdAt: new Date().toISOString()
@@ -182,6 +187,7 @@ describe('openaiL2SemanticCacheService', () => {
         endpoint: 'responses',
         model: 'gpt-5',
         textHash: 'hash-1',
+        embeddingSource: 'source-hash-1',
         queryText: 'user: hello world',
         queryEmbedding: [0.1, 0.2],
         embeddingKey: 'cache:openai:l2:embed:v1:hash-1',
@@ -238,6 +244,13 @@ describe('openaiL2SemanticCacheService', () => {
   })
 
   it('rejects borderline semantic hits when context ranking falls below the acceptance threshold', async () => {
+    const plan = openaiL2SemanticCacheService.buildCachePlan({
+      ...baseContext,
+      cacheContext: {
+        contextFingerprint: 'current-context'
+      }
+    })
+
     redis.getOpenAIL2Embedding.mockResolvedValue({
       vector: [1, 0]
     })
@@ -246,6 +259,7 @@ describe('openaiL2SemanticCacheService', () => {
       {
         model: 'gpt-5',
         textHash: 'candidate-hash',
+        embeddingSource: plan.embeddingSource,
         requestText: 'system: You are helpful.\nuser: hello world',
         contextFingerprint: 'other-context',
         meta: {
@@ -276,5 +290,36 @@ describe('openaiL2SemanticCacheService', () => {
       hasContextConflict: true
     })
     expect(redis.incrementOpenAIL2CacheMetric).toHaveBeenCalledWith('cache_reject_ranked')
+  })
+
+  it('uses the configured embedding endpoint and key when provided', async () => {
+    config.openaiCache.l2.embeddingBaseUrl = 'https://api.siliconflow.cn/v1'
+    config.openaiCache.l2.embeddingApiKey = 'silicon-key'
+    config.openaiCache.l2.embeddingModel = 'BAAI/bge-m3'
+
+    redis.getOpenAIL2Embedding.mockResolvedValue(null)
+    redis.getOpenAIL2CandidateKeys.mockResolvedValue([])
+    axios.mockResolvedValue({
+      status: 200,
+      data: {
+        data: [{ embedding: [0.12, 0.34] }]
+      }
+    })
+
+    const result = await openaiL2SemanticCacheService.beginRequest(baseContext)
+
+    expect(result.kind).toBe('miss')
+    expect(axios).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'POST',
+        url: 'https://api.siliconflow.cn/v1/embeddings',
+        headers: expect.objectContaining({
+          Authorization: 'Bearer silicon-key'
+        }),
+        data: expect.objectContaining({
+          model: 'BAAI/bge-m3'
+        })
+      })
+    )
   })
 })
