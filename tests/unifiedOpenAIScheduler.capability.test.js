@@ -18,9 +18,14 @@ jest.mock('../src/services/account/openaiResponsesAccountService', () => ({
       return true
     }
 
-    return Object.keys(modelMapping).some(
-      (key) => key.toLowerCase() === String(requestedModel || '').toLowerCase()
-    )
+    return Object.entries(modelMapping).some(([key, value]) => {
+      const requestedModelLower = String(requestedModel || '').toLowerCase()
+      if (key.toLowerCase() === requestedModelLower) {
+        return true
+      }
+
+      return typeof value === 'string' && value.toLowerCase() === requestedModelLower
+    })
   })
 }))
 
@@ -147,6 +152,43 @@ describe('unifiedOpenAIScheduler capability filtering', () => {
         'gpt-5': 'codex-0.80'
       },
       'gpt-5'
+    )
+  })
+
+  it('treats account-level model mapping values as schedulable direct upstream model names', async () => {
+    openaiResponsesAccountService.getAllAccounts.mockResolvedValue([
+      {
+        id: 'responses-4',
+        name: 'Mimo Direct',
+        isActive: true,
+        status: 'active',
+        accountType: 'shared',
+        schedulable: true,
+        providerEndpoint: 'completions',
+        modelMapping: {
+          'gpt-5.4': 'mimo-v2-pro'
+        },
+        priority: '20'
+      }
+    ])
+
+    await expect(
+      scheduler.selectAccountForApiKey({ id: 'key-4', name: 'Key Four' }, null, 'mimo-v2-pro', {
+        needsStreaming: false,
+        needsTools: false,
+        needsReasoning: false,
+        needsJsonSchema: false
+      })
+    ).resolves.toEqual({
+      accountId: 'responses-4',
+      accountType: 'openai-responses'
+    })
+
+    expect(openaiResponsesAccountService.isModelSupported).toHaveBeenCalledWith(
+      {
+        'gpt-5.4': 'mimo-v2-pro'
+      },
+      'mimo-v2-pro'
     )
   })
 

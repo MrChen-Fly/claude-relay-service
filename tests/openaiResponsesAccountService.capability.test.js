@@ -47,4 +47,15 @@ describe('openaiResponsesAccountService optional capability normalization', () =
       )
     ).toBe('codex-0.80')
   })
+
+  it('treats mapped upstream model values as supported client model aliases', () => {
+    expect(
+      openaiResponsesAccountService.isModelSupported(
+        {
+          'gpt-5.4': 'mimo-v2-pro'
+        },
+        'mimo-v2-pro'
+      )
+    ).toBe(true)
+  })
 })

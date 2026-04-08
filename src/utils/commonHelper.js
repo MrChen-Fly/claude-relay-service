@@ -189,7 +189,13 @@ const isModelInMapping = (modelMapping, requestedModel) => {
     return true
   }
   const lower = requestedModel.toLowerCase()
-  return Object.keys(modelMapping).some((k) => k.toLowerCase() === lower)
+  return Object.entries(modelMapping).some(([key, value]) => {
+    if (key.toLowerCase() === lower) {
+      return true
+    }
+
+    return typeof value === 'string' && value.toLowerCase() === lower
+  })
 }
 
 // 获取映射后的模型名称

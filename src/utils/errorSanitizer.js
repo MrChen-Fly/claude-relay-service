@@ -54,6 +54,7 @@ const ERROR_MATCHERS = [
 
   // 模型错误
   { pattern: /model.*not.*found|model.*unavailable|unsupported.*model/i, code: 'E006' },
+  { pattern: /does not support model/i, code: 'E006' },
 
   // 请求错误
   { pattern: /bad.*request|invalid.*request|invalid.*argument|malformed/i, code: 'E005' },

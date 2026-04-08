@@ -757,7 +757,13 @@ class OpenAIResponsesAccountService {
     }
 
     const requestedModelLower = String(requestedModel || '').toLowerCase()
-    return Object.keys(modelMapping).some((key) => key.toLowerCase() === requestedModelLower)
+    return Object.entries(modelMapping).some(([key, value]) => {
+      if (key.toLowerCase() === requestedModelLower) {
+        return true
+      }
+
+      return typeof value === 'string' && value.toLowerCase() === requestedModelLower
+    })
   }
 
   getMappedModel(modelMapping, requestedModel) {
