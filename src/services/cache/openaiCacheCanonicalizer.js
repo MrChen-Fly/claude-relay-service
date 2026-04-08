@@ -12,9 +12,16 @@ const OMITTED_REQUEST_FIELDS = new Set([
   'stream',
   'prompt_cache_key',
   'promptCacheKey',
+  'prompt_cache_retention',
   'session_id',
   'conversation_id',
-  'store'
+  'store',
+  'user',
+  'metadata',
+  'service_tier',
+  'safety_identifier',
+  'tool_usage',
+  'usage'
 ])
 const ALWAYS_DYNAMIC_REQUEST_FIELDS = ['background', 'web_search_options']
 
@@ -162,6 +169,10 @@ function getNumericValue(value) {
 }
 
 function normalizeScalarValue(key, value) {
+  if (value === undefined || value === null || value === '') {
+    return undefined
+  }
+
   const normalized = normalizeStringValue(value)
   if (NUMERIC_REQUEST_FIELDS.has(key)) {
     const numericValue = getNumericValue(normalized)
@@ -179,12 +190,13 @@ function normalizeFunctionTool(tool) {
   }
 
   const type = normalizeStringValue(tool.type)
-  if (type !== 'function') {
+  const sourceFunction = tool.function && typeof tool.function === 'object' ? tool.function : tool
+  const name = normalizeStringValue(sourceFunction.name || tool.name)
+  const normalizedType = type || (name ? 'function' : '')
+  if (normalizedType !== 'function') {
     return null
   }
 
-  const sourceFunction = tool.function && typeof tool.function === 'object' ? tool.function : tool
-  const name = normalizeStringValue(sourceFunction.name || tool.name)
   if (!name) {
     return null
   }
@@ -395,13 +407,6 @@ function buildToolProfile(requestBody = {}, options = {}) {
   }
 
   const choiceMode = getToolChoiceMode(requestBody.tool_choice)
-  if (semanticSafeOnly && choiceMode.startsWith('function:')) {
-    return {
-      supported: false,
-      reason: 'dynamic_request'
-    }
-  }
-
   return {
     supported: true,
     hasTools: normalizedTools.length > 0,
@@ -412,17 +417,28 @@ function buildToolProfile(requestBody = {}, options = {}) {
 }
 
 function normalizeCacheValue(value, parentKey = '') {
-  if (Array.isArray(value)) {
-    if (parentKey === 'tools') {
-      return (
-        normalizeToolDefinitions(value) || value.map((item) => normalizeCacheValue(item, parentKey))
-      )
-    }
-
-    return value.map((item) => normalizeCacheValue(item, parentKey))
+  if (value === undefined || value === null) {
+    return undefined
   }
 
-  if (!value || typeof value !== 'object') {
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      return undefined
+    }
+
+    if (parentKey === 'tools') {
+      const normalizedTools = normalizeToolDefinitions(value)
+      return normalizedTools && normalizedTools.length > 0 ? normalizedTools : undefined
+    }
+
+    const normalizedItems = value
+      .map((item) => normalizeCacheValue(item, parentKey))
+      .filter((item) => item !== undefined)
+
+    return normalizedItems.length > 0 ? normalizedItems : undefined
+  }
+
+  if (typeof value !== 'object') {
     return normalizeScalarValue(parentKey, value)
   }
 
@@ -468,7 +484,7 @@ function normalizeCacheValue(value, parentKey = '') {
     }
   }
 
-  return normalized
+  return Object.keys(normalized).length > 0 ? normalized : undefined
 }
 
 function buildCanonicalPrompt(requestBody = {}, options = {}) {

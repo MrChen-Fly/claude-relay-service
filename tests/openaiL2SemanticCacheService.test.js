@@ -198,7 +198,7 @@ describe('openaiL2SemanticCacheService', () => {
     expect(plan.toolChoiceMode).toBe('auto')
   })
 
-  it('bypasses forced function-tool requests for semantic cache reuse', () => {
+  it('keeps forced function-tool requests cacheable when the tool schema is safe', () => {
     const plan = openaiL2SemanticCacheService.buildCachePlan({
       ...baseContext,
       requestBody: {
@@ -222,10 +222,37 @@ describe('openaiL2SemanticCacheService', () => {
       }
     })
 
-    expect(plan).toEqual({
-      cacheable: false,
-      reason: 'dynamic_request'
+    expect(plan.cacheable).toBe(true)
+    expect(plan.toolSignature).toBeTruthy()
+    expect(plan.toolChoiceMode).toBe('function:shell_command')
+  })
+
+  it('treats implicit function tools as cacheable semantic candidates', () => {
+    const plan = openaiL2SemanticCacheService.buildCachePlan({
+      ...baseContext,
+      requestBody: {
+        ...baseContext.requestBody,
+        tools: [
+          {
+            name: 'shell_command',
+            description: 'Run a terminal command',
+            parameters: {
+              type: 'object',
+              properties: {
+                command: { type: 'string' }
+              }
+            }
+          }
+        ],
+        tool_choice: {
+          name: 'shell_command'
+        }
+      }
     })
+
+    expect(plan.cacheable).toBe(true)
+    expect(plan.toolSignature).toBeTruthy()
+    expect(plan.toolChoiceMode).toBe('function:shell_command')
   })
 
   it('bypasses unsupported multimodal content', () => {

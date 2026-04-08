@@ -86,7 +86,7 @@ describe('openaiL3GlobalCacheService', () => {
     expect(first.cacheKey).toBe(second.cacheKey)
   })
 
-  it('ignores default text format noise when building the global cache key', () => {
+  it('ignores default text format and request noise when building the global cache key', () => {
     const first = openaiL3GlobalCacheService.buildCachePlan(baseContext)
     const second = openaiL3GlobalCacheService.buildCachePlan({
       ...baseContext,
@@ -97,13 +97,49 @@ describe('openaiL3GlobalCacheService', () => {
             type: 'text'
           }
         },
-        store: true
+        store: true,
+        metadata: {},
+        user: 'end-user-1',
+        service_tier: 'auto',
+        safety_identifier: 'sid-1',
+        prompt_cache_retention: {
+          type: 'ephemeral',
+          ttl_seconds: 86400
+        },
+        tools: []
       }
     })
 
     expect(first.cacheable).toBe(true)
     expect(second.cacheable).toBe(true)
     expect(first.cacheKey).toBe(second.cacheKey)
+  })
+
+  it('treats implicit function tools as cacheable global-cache candidates', () => {
+    const plan = openaiL3GlobalCacheService.buildCachePlan({
+      ...baseContext,
+      requestBody: {
+        ...baseContext.requestBody,
+        tools: [
+          {
+            name: 'shell_command',
+            description: 'Run a terminal command',
+            parameters: {
+              type: 'object',
+              properties: {
+                command: { type: 'string' }
+              }
+            }
+          }
+        ],
+        tool_choice: {
+          name: 'shell_command'
+        }
+      }
+    })
+
+    expect(plan.cacheable).toBe(true)
+    expect(plan.cacheKey).toContain('cache:openai:l3:v1:openai:responses:')
   })
 
   it('does not require tenant id for global cache plans', () => {

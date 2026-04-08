@@ -83,7 +83,7 @@ describe('openaiL1CacheService', () => {
     expect(first.cacheKey).toBe(second.cacheKey)
   })
 
-  it('ignores default text format noise when building the cache key', () => {
+  it('ignores default text format and request noise when building the cache key', () => {
     const first = openaiL1CacheService.buildCachePlan(baseContext)
     const second = openaiL1CacheService.buildCachePlan({
       ...baseContext,
@@ -94,7 +94,16 @@ describe('openaiL1CacheService', () => {
             type: 'text'
           }
         },
-        store: true
+        store: true,
+        metadata: {},
+        user: 'end-user-1',
+        service_tier: 'auto',
+        safety_identifier: 'sid-1',
+        prompt_cache_retention: {
+          type: 'ephemeral',
+          ttl_seconds: 86400
+        },
+        tools: []
       }
     })
 
@@ -155,6 +164,33 @@ describe('openaiL1CacheService', () => {
             }
           }
         ]
+      }
+    })
+
+    expect(plan.cacheable).toBe(true)
+    expect(plan.cacheKey).toContain('cache:openai:l1:v1:api-key-1:openai:responses:')
+  })
+
+  it('treats implicit function tools as cacheable exact-cache candidates', () => {
+    const plan = openaiL1CacheService.buildCachePlan({
+      ...baseContext,
+      requestBody: {
+        ...baseContext.requestBody,
+        tools: [
+          {
+            name: 'shell_command',
+            description: 'Run a terminal command',
+            parameters: {
+              type: 'object',
+              properties: {
+                command: { type: 'string' }
+              }
+            }
+          }
+        ],
+        tool_choice: {
+          name: 'shell_command'
+        }
       }
     })
 

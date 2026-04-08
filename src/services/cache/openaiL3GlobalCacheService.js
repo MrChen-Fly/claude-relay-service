@@ -92,7 +92,7 @@ function buildSignature(context, resolvedModel) {
     ...(context.requestBody || {}),
     ...(resolvedModel ? { model: resolvedModel } : {})
   }
-  const normalizedBody = normalizeCacheValue(rawBody)
+  const normalizedBody = normalizeCacheValue(rawBody) || {}
   const canonicalPrompt = buildCanonicalPrompt(rawBody)
 
   if (canonicalPrompt.supported && canonicalPrompt.items.length) {
