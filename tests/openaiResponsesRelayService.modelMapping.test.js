@@ -302,4 +302,103 @@ describe('openaiResponsesRelayService account model mapping integration', () => 
     expect(openaiResponsesAccountService.updateAccountUsage).toHaveBeenCalledWith('responses-4', 16)
     expect(res.status).toHaveBeenCalledWith(200)
   })
+
+  it('retries the alternate protocol for stream responses when the responses endpoint is rejected', async () => {
+    openaiResponsesAccountService.getAccount.mockResolvedValue({
+      id: 'responses-5',
+      name: 'Stream Fallback Account',
+      baseApi: 'https://relay.example.com',
+      apiKey: 'secret-key',
+      providerEndpoint: 'responses'
+    })
+    axios
+      .mockResolvedValueOnce({
+        status: 404,
+        statusText: 'Not Found',
+        headers: {},
+        data: {
+          error: {
+            message: 'unknown endpoint /v1/responses'
+          }
+        }
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        data: {
+          pipe: jest.fn()
+        }
+      })
+
+    jest.spyOn(openaiResponsesRelayService, '_throttledUpdateLastUsedAt').mockResolvedValue()
+    jest.spyOn(openaiResponsesRelayService, '_handleStreamResponse').mockResolvedValue('stream-ok')
+
+    const req = {
+      method: 'POST',
+      path: '/v1/responses',
+      headers: {},
+      body: {
+        model: 'mimo-v2-pro',
+        input: [{ role: 'user', content: 'hello' }],
+        stream: true
+      },
+      once: jest.fn(),
+      removeListener: jest.fn()
+    }
+    const res = {
+      once: jest.fn(),
+      removeListener: jest.fn()
+    }
+
+    const result = await openaiResponsesRelayService.handleRequest(
+      req,
+      res,
+      { id: 'responses-5', name: 'Stream Fallback Account', dailyQuota: '0' },
+      { id: 'api-key-5' },
+      {
+        attempts: [
+          {
+            path: '/v1/responses',
+            body: {
+              model: 'mimo-v2-pro',
+              input: [{ role: 'user', content: 'hello' }],
+              stream: true
+            },
+            transform: 'passthrough',
+            requestedModel: 'mimo-v2-pro'
+          },
+          {
+            path: '/v1/chat/completions',
+            body: {
+              model: 'mimo-v2-pro',
+              messages: [{ role: 'user', content: 'hello' }],
+              stream: true
+            },
+            transform: 'chat_to_responses',
+            requestedModel: 'mimo-v2-pro'
+          }
+        ]
+      }
+    )
+
+    expect(result).toBe('stream-ok')
+    expect(axios).toHaveBeenCalledTimes(2)
+    expect(axios.mock.calls[0][0].url).toBe('https://relay.example.com/v1/responses')
+    expect(axios.mock.calls[1][0].url).toBe('https://relay.example.com/v1/chat/completions')
+    expect(openaiResponsesRelayService._handleStreamResponse).toHaveBeenCalledWith(
+      expect.any(Object),
+      res,
+      { id: 'responses-5', name: 'Stream Fallback Account', dailyQuota: '0' },
+      { id: 'api-key-5' },
+      'mimo-v2-pro',
+      expect.any(Function),
+      req,
+      null,
+      expect.objectContaining({
+        convertJson: expect.any(Function)
+      }),
+      expect.any(Function)
+    )
+  })
 })

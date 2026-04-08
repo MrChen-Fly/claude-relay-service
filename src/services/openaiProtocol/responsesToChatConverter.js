@@ -112,6 +112,13 @@ function convertResponseFormat(textConfig) {
   return undefined
 }
 
+function buildPlainUserMessage(content) {
+  return {
+    role: 'user',
+    content
+  }
+}
+
 class ResponsesToChatConverter {
   buildRequestFromResponses(responseBody = {}) {
     const request = {
@@ -177,6 +184,11 @@ class ResponsesToChatConverter {
       })
     }
 
+    if (typeof responseBody.input === 'string') {
+      messages.push(buildPlainUserMessage(responseBody.input))
+      return messages
+    }
+
     const inputItems = Array.isArray(responseBody.input)
       ? responseBody.input
       : responseBody.input
@@ -184,15 +196,28 @@ class ResponsesToChatConverter {
         : []
 
     for (const item of inputItems) {
+      if (typeof item === 'string') {
+        messages.push(buildPlainUserMessage(item))
+        continue
+      }
+
       if (!item || typeof item !== 'object') {
         continue
       }
 
-      if (item.type === 'message') {
+      if (
+        item.type === 'message' ||
+        (item.type === undefined && (item.role || item.content !== undefined))
+      ) {
         messages.push({
           role: mapMessageRole(item.role),
           content: extractTextContent(item.content)
         })
+        continue
+      }
+
+      if (item.type === 'input_text' && typeof item.text === 'string') {
+        messages.push(buildPlainUserMessage(item.text))
         continue
       }
 

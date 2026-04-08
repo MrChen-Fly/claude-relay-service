@@ -214,4 +214,79 @@ describe('openaiProtocol bridge service', () => {
       )
     ).toEqual(['/v1/chat/completions', '/v1/responses'])
   })
+
+  it('keeps responses first and converts string input for chat/completions fallback', async () => {
+    openaiResponsesRelayService.handleRequest.mockResolvedValue('responses-fallback')
+
+    const req = {
+      path: '/v1/responses',
+      body: {
+        model: 'mimo-v2-pro',
+        instructions: 'Only answer briefly.',
+        input: 'hello',
+        stream: false
+      }
+    }
+
+    const result = await bridgeService.handleResponsesClientRequest(
+      req,
+      {},
+      { id: 'responses-4', name: 'Responses First' },
+      { id: 'api-key-4' },
+      'mimo-v2-pro',
+      { providerEndpoint: 'responses' }
+    )
+
+    expect(result).toBe('responses-fallback')
+
+    const { attempts } = openaiResponsesRelayService.handleRequest.mock.calls[0][4]
+    expect(attempts.map((attempt) => attempt.path)).toEqual([
+      '/v1/responses',
+      '/v1/chat/completions'
+    ])
+    expect(attempts[0]).toMatchObject({
+      transform: 'passthrough',
+      requestedModel: 'mimo-v2-pro',
+      body: req.body
+    })
+    expect(attempts[1]).toMatchObject({
+      transform: 'chat_to_responses',
+      requestedModel: 'mimo-v2-pro',
+      body: {
+        model: 'mimo-v2-pro',
+        stream: false,
+        messages: [
+          { role: 'system', content: 'Only answer briefly.' },
+          { role: 'user', content: 'hello' }
+        ]
+      }
+    })
+  })
+
+  it('converts simplified response message arrays for chat/completions fallback', async () => {
+    openaiResponsesRelayService.handleRequest.mockResolvedValue('responses-fallback-array')
+
+    const req = {
+      path: '/v1/responses',
+      body: {
+        model: 'mimo-v2-pro',
+        input: [{ role: 'user', content: 'hello from simplified input' }],
+        stream: false
+      }
+    }
+
+    await bridgeService.handleResponsesClientRequest(
+      req,
+      {},
+      { id: 'responses-5', name: 'Responses First' },
+      { id: 'api-key-5' },
+      'mimo-v2-pro',
+      { providerEndpoint: 'responses' }
+    )
+
+    const { attempts } = openaiResponsesRelayService.handleRequest.mock.calls[0][4]
+    expect(attempts[1].body.messages).toEqual([
+      { role: 'user', content: 'hello from simplified input' }
+    ])
+  })
 })

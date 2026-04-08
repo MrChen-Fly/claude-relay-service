@@ -4,7 +4,6 @@
  */
 
 const express = require('express')
-const axios = require('axios')
 const openaiResponsesAccountService = require('../../services/account/openaiResponsesAccountService')
 const apiKeyService = require('../../services/apiKeyService')
 const accountGroupService = require('../../services/accountGroupService')
@@ -13,12 +12,7 @@ const { authenticateAdmin } = require('../../middleware/auth')
 const logger = require('../../utils/logger')
 const webhookNotifier = require('../../utils/webhookNotifier')
 const { formatAccountExpiry, mapExpiryField } = require('./utils')
-const {
-  createOpenAITestPayload,
-  createChatCompletionsTestPayload,
-  extractErrorMessage
-} = require('../../utils/testPayloadHelper')
-const { getProxyAgent } = require('../../utils/proxyHelper')
+const openaiResponsesUpstreamProbeService = require('../../services/openaiProtocol/openaiResponsesUpstreamProbeService')
 
 const router = express.Router()
 
@@ -501,8 +495,6 @@ router.post('/openai-responses-accounts/:id/reset-usage', authenticateAdmin, asy
 router.post('/openai-responses-accounts/:accountId/test', authenticateAdmin, async (req, res) => {
   const { accountId } = req.params
   const { model = 'gpt-4o-mini' } = req.body
-  const startTime = Date.now()
-
   try {
     // 获取账户信息（apiKey 已自动解密）
     const account = await openaiResponsesAccountService.getAccount(accountId)
@@ -514,95 +506,34 @@ router.post('/openai-responses-accounts/:accountId/test', authenticateAdmin, asy
       return res.status(401).json({ error: 'API Key not found or decryption failed' })
     }
 
-    // 构造测试请求（根据 providerEndpoint 和 baseApi 决定端点路径）
-    const baseUrl = account.baseApi || 'https://api.openai.com'
-    const providerEndpoint = openaiResponsesAccountService.normalizeProviderEndpoint(
-      account.providerEndpoint
-    )
-    const resolvedModel = openaiResponsesAccountService.getMappedModel(
-      account.modelMapping || account.supportedModels,
-      model
-    )
-    const isChatCompletionsEndpoint = providerEndpoint === 'completions'
-    let endpointPath = isChatCompletionsEndpoint ? '/chat/completions' : '/responses'
-    // 防止 baseApi 已含 /v1 时路径重复
-    if (!baseUrl.endsWith('/v1')) {
-      endpointPath = `/v1${endpointPath}`
-    }
-    const apiUrl = `${baseUrl}${endpointPath}`
-    const payload = isChatCompletionsEndpoint
-      ? createChatCompletionsTestPayload(resolvedModel, { maxTokens: 100 })
-      : createOpenAITestPayload(resolvedModel, { stream: false })
-
-    const requestConfig = {
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${account.apiKey}`
-      },
-      timeout: 30000
-    }
-
-    // 配置代理
-    if (account.proxy) {
-      const agent = getProxyAgent(account.proxy)
-      if (agent) {
-        requestConfig.httpsAgent = agent
-        requestConfig.httpAgent = agent
-      }
-    }
-
-    const response = await axios.post(apiUrl, payload, requestConfig)
-    const latency = Date.now() - startTime
-
-    // 提取响应文本（同时兼容 Responses / Chat Completions）
-    let responseText = ''
-    if (isChatCompletionsEndpoint) {
-      const content = response.data?.choices?.[0]?.message?.content
-      if (typeof content === 'string') {
-        responseText = content
-      } else if (Array.isArray(content)) {
-        responseText = content
-          .map((item) => (item && item.type === 'text' ? item.text || '' : ''))
-          .join('')
-      }
-    } else {
-      const output = response.data?.output
-      if (Array.isArray(output)) {
-        for (const item of output) {
-          if (item.type === 'message' && Array.isArray(item.content)) {
-            for (const block of item.content) {
-              if (block.type === 'output_text' && block.text) {
-                responseText += block.text
-              }
-            }
-          }
-        }
-      }
-    }
+    const probeResult = await openaiResponsesUpstreamProbeService.probeAccount(account, { model })
 
     logger.success(
-      `✅ OpenAI-Responses account test passed: ${account.name} (${accountId}), latency: ${latency}ms`
+      `✅ OpenAI-Responses account test passed: ${account.name} (${accountId}), latency: ${probeResult.latency}ms`
     )
 
     return res.json({
       success: true,
       data: {
-        accountId,
-        accountName: account.name,
-        model,
-        latency,
-        responseText: responseText.substring(0, 200)
+        accountId: probeResult.accountId,
+        accountName: probeResult.accountName,
+        model: probeResult.model,
+        resolvedModel: probeResult.resolvedModel,
+        latency: probeResult.latency,
+        responseText: probeResult.responseText,
+        selectedUpstreamPath: probeResult.selectedUpstreamPath,
+        fallbackUsed: probeResult.fallbackUsed,
+        capabilities: probeResult.capabilities
       }
     })
   } catch (error) {
-    const latency = Date.now() - startTime
     logger.error(`❌ OpenAI-Responses account test failed: ${accountId}`, error.message)
 
-    return res.status(500).json({
+    return res.status(error.statusCode || 500).json({
       success: false,
       error: 'Test failed',
-      message: extractErrorMessage(error.response?.data, error.message),
-      latency
+      message: error.message,
+      latency: error.latency
     })
   }
 })

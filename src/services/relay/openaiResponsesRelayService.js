@@ -15,6 +15,10 @@ const ChatToResponsesConverter = require('../openaiProtocol/chatToResponsesConve
 const CodexToOpenAIConverter = require('../codexToOpenAI')
 const redis = require('../../models/redis')
 const openaiCacheChainService = require('../cache/gptcache/openaiCacheChainService')
+const {
+  normalizeTargetPath,
+  shouldRetryWithAlternateProtocol
+} = require('../openaiProtocol/upstreamProtocolHelper')
 
 // lastUsedAt 更新节流（每账户 60 秒内最多更新一次，使用 LRU 防止内存泄漏）
 const lastUsedAtThrottle = new LRUCache(1000) // 最多缓存 1000 个账户
@@ -260,7 +264,7 @@ class OpenAIResponsesRelayService {
           attempt.body.model = resolvedModel
         }
 
-        const targetPath = this._normalizeTargetPath(fullAccount.baseApi || '', attempt.path)
+        const targetPath = normalizeTargetPath(fullAccount.baseApi || '', attempt.path)
         const targetUrl = `${fullAccount.baseApi || ''}${targetPath}`
         const requestOptions = {
           method: req.method,
@@ -303,7 +307,7 @@ class OpenAIResponsesRelayService {
         if (response.status >= 400) {
           await this._consumeErrorResponseData(response)
 
-          if (this._shouldRetryWithAlternateProtocol(response, index < attempts.length - 1)) {
+          if (shouldRetryWithAlternateProtocol(response, index < attempts.length - 1)) {
             logger.warn(
               'Upstream endpoint rejected the request shape, retrying alternate protocol',
               {
@@ -682,13 +686,6 @@ class OpenAIResponsesRelayService {
     return headers
   }
 
-  _normalizeTargetPath(baseApi, targetPath) {
-    if (baseApi.endsWith('/v1') && targetPath.startsWith('/v1/')) {
-      return targetPath.slice(3)
-    }
-    return targetPath
-  }
-
   _buildRequestMetadata(selectedAttempt, req) {
     const promptCacheKey = extractPromptCacheKey(selectedAttempt?.body, req?.body)
     if (!promptCacheKey) {
@@ -742,46 +739,6 @@ class OpenAIResponsesRelayService {
     }
 
     return response.data
-  }
-
-  _shouldRetryWithAlternateProtocol(response, hasAlternateAttempt) {
-    if (!hasAlternateAttempt) {
-      return false
-    }
-
-    if ([404, 405, 415, 501].includes(response.status)) {
-      return true
-    }
-
-    if (![400, 403, 422].includes(response.status)) {
-      return false
-    }
-
-    const errorData = response.data?.error || response.data || {}
-    const haystack = `${errorData.code || ''} ${errorData.type || ''} ${errorData.message || ''}`
-      .toLowerCase()
-      .trim()
-
-    if (!haystack) {
-      return false
-    }
-
-    const retryPatterns = [
-      /unsupported.*endpoint/,
-      /unknown.*endpoint/,
-      /unknown.*path/,
-      /unknown.*url/,
-      /no route/,
-      /not found/,
-      /illegal access/,
-      /method not allowed/,
-      /missing required parameter.*\b(messages|input)\b/,
-      /\b(messages|input)\b.*\brequired\b/,
-      /chat\/completions/,
-      /\/responses\b/
-    ]
-
-    return retryPatterns.some((pattern) => pattern.test(haystack))
   }
 
   _createResponseAdapter(attempt = {}) {

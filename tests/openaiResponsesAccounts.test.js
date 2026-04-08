@@ -26,6 +26,9 @@ jest.mock('../src/services/apiKeyService', () => ({
   getAllApiKeysLite: jest.fn(),
   unbindAccountFromAllKeys: jest.fn()
 }))
+jest.mock('../src/services/openaiProtocol/openaiResponsesUpstreamProbeService', () => ({
+  probeAccount: jest.fn()
+}))
 
 jest.mock('../src/models/redis', () => ({
   getClientSafe: jest.fn(),
@@ -57,6 +60,7 @@ jest.mock('../src/utils/proxyHelper', () => ({
 }))
 
 const openaiResponsesAccountService = require('../src/services/account/openaiResponsesAccountService')
+const openaiResponsesUpstreamProbeService = require('../src/services/openaiProtocol/openaiResponsesUpstreamProbeService')
 const openaiResponsesAccountsRouter = require('../src/routes/admin/openaiResponsesAccounts')
 
 describe('admin openai-responses account maxConcurrentTasks validation', () => {
@@ -106,5 +110,63 @@ describe('admin openai-responses account maxConcurrentTasks validation', () => {
       error: 'maxConcurrentTasks must be a non-negative integer'
     })
     expect(openaiResponsesAccountService.updateAccount).not.toHaveBeenCalled()
+  })
+
+  it('tests account via upstream probe service and returns detected capabilities', async () => {
+    const app = buildApp()
+    openaiResponsesAccountService.getAccount.mockResolvedValue({
+      id: 'responses-2',
+      name: 'Probe Account',
+      apiKey: 'secret-key'
+    })
+    openaiResponsesUpstreamProbeService.probeAccount.mockResolvedValue({
+      accountId: 'responses-2',
+      accountName: 'Probe Account',
+      model: 'mimo-v2-pro',
+      resolvedModel: 'mimo-v2-pro',
+      latency: 321,
+      responseText: 'OK',
+      selectedUpstreamPath: '/v1/chat/completions',
+      fallbackUsed: true,
+      capabilities: {
+        supportsStreaming: true,
+        supportsTools: true,
+        supportsReasoning: false,
+        supportsJsonSchema: false
+      }
+    })
+
+    const response = await request(app)
+      .post('/admin/openai-responses-accounts/responses-2/test')
+      .send({ model: 'mimo-v2-pro' })
+
+    expect(response.status).toBe(200)
+    expect(openaiResponsesUpstreamProbeService.probeAccount).toHaveBeenCalledWith(
+      {
+        id: 'responses-2',
+        name: 'Probe Account',
+        apiKey: 'secret-key'
+      },
+      { model: 'mimo-v2-pro' }
+    )
+    expect(response.body).toEqual({
+      success: true,
+      data: {
+        accountId: 'responses-2',
+        accountName: 'Probe Account',
+        model: 'mimo-v2-pro',
+        resolvedModel: 'mimo-v2-pro',
+        latency: 321,
+        responseText: 'OK',
+        selectedUpstreamPath: '/v1/chat/completions',
+        fallbackUsed: true,
+        capabilities: {
+          supportsStreaming: true,
+          supportsTools: true,
+          supportsReasoning: false,
+          supportsJsonSchema: false
+        }
+      }
+    })
   })
 })
