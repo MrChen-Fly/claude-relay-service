@@ -375,6 +375,23 @@ class OpenAIResponsesRelayService {
         if (response.status >= 400) {
           await this._consumeErrorResponseData(response)
 
+          const compatibilityRetryAttempt = this._buildCompatibilityRetryAttempt(attempt, response)
+          if (compatibilityRetryAttempt) {
+            attempts.splice(index + 1, 0, compatibilityRetryAttempt)
+            logger.warn(
+              'Upstream responses endpoint requires request compatibility adaptation, retrying',
+              {
+                accountId: account.id,
+                accountName: account.name,
+                currentPath: attempt.path,
+                nextAttempt: `${index + 2}/${attempts.length}`,
+                status: response.status,
+                aggregateResponse: compatibilityRetryAttempt.aggregateResponse === true
+              }
+            )
+            continue
+          }
+
           if (shouldRetryWithAlternateProtocol(response, index < attempts.length - 1)) {
             logger.warn(
               'Upstream endpoint rejected the request shape, retrying alternate protocol',
@@ -513,6 +530,25 @@ class OpenAIResponsesRelayService {
       }
 
       await this._throttledUpdateLastUsedAt(account.id)
+
+      if (
+        selectedAttempt.aggregateResponse === true &&
+        response.data &&
+        typeof response.data.pipe === 'function'
+      ) {
+        return this._handleAggregatedStreamResponse(
+          response,
+          res,
+          account,
+          apiKeyData,
+          selectedAttempt.requestedModel || selectedAttempt.body?.model,
+          handleClientDisconnect,
+          req,
+          requestMetadata,
+          responseAdapter,
+          cacheDecision
+        )
+      }
 
       if (
         selectedAttempt.body?.stream &&
@@ -746,8 +782,133 @@ class OpenAIResponsesRelayService {
       path: attempt.path || req.path,
       body: attempt.body || req.body,
       transform: attempt.transform || 'passthrough',
-      requestedModel: attempt.requestedModel || attempt.body?.model || req.body?.model || null
+      requestedModel: attempt.requestedModel || attempt.body?.model || req.body?.model || null,
+      clientStream:
+        attempt.clientStream !== undefined
+          ? attempt.clientStream
+          : (attempt.body || req.body)?.stream === true,
+      aggregateResponse: attempt.aggregateResponse === true
     }))
+  }
+
+  _isResponsesPath(pathname = '') {
+    const normalizedPath = `/${String(pathname || '')
+      .replace(/^\/+/, '')
+      .replace(/^v1\//, '')}`
+    return normalizedPath === '/responses' || normalizedPath === '/responses/compact'
+  }
+
+  _extractUpstreamErrorMessage(errorData) {
+    const candidates = [
+      errorData,
+      errorData?.detail,
+      errorData?.message,
+      errorData?.error?.detail,
+      errorData?.error?.message
+    ]
+
+    for (const candidate of candidates) {
+      if (typeof candidate === 'string' && candidate.trim()) {
+        return candidate.trim()
+      }
+    }
+
+    return ''
+  }
+
+  _normalizeResponsesInputToList(body = {}) {
+    if (
+      !body ||
+      typeof body !== 'object' ||
+      body.input === undefined ||
+      Array.isArray(body.input)
+    ) {
+      return {
+        changed: false,
+        body
+      }
+    }
+
+    if (typeof body.input === 'string') {
+      return {
+        changed: true,
+        body: {
+          ...body,
+          input: [
+            {
+              role: 'user',
+              content: body.input
+            }
+          ]
+        }
+      }
+    }
+
+    return {
+      changed: true,
+      body: {
+        ...body,
+        input: [body.input]
+      }
+    }
+  }
+
+  _buildCompatibilityRetryAttempt(attempt, response) {
+    if (
+      !attempt ||
+      attempt.transform !== 'passthrough' ||
+      !this._isResponsesPath(attempt.path) ||
+      ![400, 422].includes(response?.status)
+    ) {
+      return null
+    }
+
+    const errorMessage = this._extractUpstreamErrorMessage(response.data).toLowerCase()
+    if (!errorMessage) {
+      return null
+    }
+
+    let nextBody =
+      attempt.body && typeof attempt.body === 'object' ? { ...attempt.body } : attempt.body
+    let changed = false
+    let aggregateResponse = attempt.aggregateResponse === true
+
+    if (/stream must be set to true/.test(errorMessage)) {
+      if (nextBody?.stream !== true) {
+        nextBody = {
+          ...nextBody,
+          stream: true
+        }
+        changed = true
+      }
+
+      if (attempt.clientStream !== true) {
+        aggregateResponse = true
+      }
+    }
+
+    if (
+      /stream must be set to true/.test(errorMessage) ||
+      /input must be a list/.test(errorMessage) ||
+      (/\binput\b/.test(errorMessage) && /\blist\b/.test(errorMessage))
+    ) {
+      const normalizedInputResult = this._normalizeResponsesInputToList(nextBody)
+      if (normalizedInputResult.changed) {
+        nextBody = normalizedInputResult.body
+        changed = true
+      }
+    }
+
+    if (!changed && aggregateResponse === attempt.aggregateResponse) {
+      return null
+    }
+
+    return {
+      ...attempt,
+      body: nextBody,
+      clientStream: attempt.clientStream === true,
+      aggregateResponse
+    }
   }
 
   _buildRequestHeaders(req, fullAccount) {
@@ -943,6 +1104,74 @@ class OpenAIResponsesRelayService {
     }
 
     return response
+  }
+
+  async _consumeSuccessfulStreamResponse(response, responseAdapter = null) {
+    let usageData = null
+    let actualModel = null
+    let finalResponseBody = null
+    const streamCaptureState = this._createResponsesStreamCaptureState()
+    const parser = new IncrementalSSEParser()
+
+    const flushParsedEvents = (events) => {
+      for (const event of events) {
+        if (event.type !== 'data' || !event.data) {
+          continue
+        }
+
+        this._captureResponsesStreamEvent(streamCaptureState, event.data)
+
+        if (typeof responseAdapter?.writeEvent === 'function') {
+          responseAdapter.writeEvent(event.data, () => {})
+        }
+
+        if (event.data.type === 'response.completed' && event.data.response) {
+          finalResponseBody = event.data.response
+          if (event.data.response.model) {
+            actualModel = event.data.response.model
+          }
+          if (event.data.response.usage) {
+            usageData = event.data.response.usage
+          }
+        }
+
+        if (event.data.model) {
+          actualModel = event.data.model
+        }
+        if (event.data.usage) {
+          usageData = event.data.usage
+        }
+      }
+    }
+
+    await new Promise((resolve, reject) => {
+      response.data.on('data', (chunk) => {
+        try {
+          flushParsedEvents(parser.feed(chunk.toString()))
+        } catch (error) {
+          reject(error)
+        }
+      })
+      response.data.on('end', resolve)
+      response.data.on('error', reject)
+    })
+
+    const remaining = parser.getRemaining()
+    if (remaining.trim()) {
+      flushParsedEvents(parser.feed('\n\n'))
+    }
+
+    const responseBody =
+      responseAdapter?.getFinalPayload?.() ||
+      this._buildCapturedResponsesPayload(streamCaptureState, finalResponseBody) ||
+      finalResponseBody ||
+      null
+
+    return {
+      responseBody,
+      actualModel: actualModel || responseBody?.model || responseBody?.response?.model || null,
+      usage: usageData || responseBody?.usage || responseBody?.response?.usage || null
+    }
   }
 
   async _replayCachedStreamResponse(res, cacheDecision = {}) {
@@ -1242,6 +1471,75 @@ class OpenAIResponsesRelayService {
     events.push('data: [DONE]\n\n')
 
     return events
+  }
+
+  async _handleAggregatedStreamResponse(
+    response,
+    res,
+    account,
+    apiKeyData,
+    requestedModel,
+    handleClientDisconnect,
+    req,
+    requestMetadata = null,
+    responseAdapter = null,
+    cacheDecision = null
+  ) {
+    try {
+      const aggregatedResult = await this._consumeSuccessfulStreamResponse(
+        response,
+        responseAdapter
+      )
+      const { responseBody } = aggregatedResult
+
+      if (!responseBody || typeof responseBody !== 'object') {
+        throw new Error('Failed to aggregate upstream stream response body')
+      }
+
+      await openaiCacheChainService.storeUpstreamResponse(cacheDecision, {
+        statusCode: response.status,
+        body: responseBody,
+        headers: response.headers,
+        actualModel: aggregatedResult.actualModel,
+        usage: aggregatedResult.usage
+      })
+
+      req.removeListener('close', handleClientDisconnect)
+      res.removeListener('close', handleClientDisconnect)
+
+      return this._handleNormalResponse(
+        {
+          status: response.status,
+          data: responseBody
+        },
+        res,
+        account,
+        apiKeyData,
+        requestedModel,
+        req._serviceTier || null,
+        null,
+        requestMetadata
+      )
+    } catch (error) {
+      logger.error('Failed to aggregate OpenAI-Responses stream response:', {
+        accountId: account?.id,
+        message: error.message
+      })
+
+      req.removeListener('close', handleClientDisconnect)
+      res.removeListener('close', handleClientDisconnect)
+
+      if (res.headersSent) {
+        return res.end()
+      }
+
+      return res.status(502).json({
+        error: {
+          message: 'Failed to aggregate upstream stream response',
+          type: 'upstream_stream_error'
+        }
+      })
+    }
   }
 
   async _handleStreamResponse(

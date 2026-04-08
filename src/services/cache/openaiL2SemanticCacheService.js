@@ -87,7 +87,10 @@ function isMessageInputItem(item) {
     return false
   }
 
-  return item.type === 'message' || (item.type === undefined && (item.role || item.content !== undefined))
+  return (
+    item.type === 'message' ||
+    (item.type === undefined && (item.role || item.content !== undefined))
+  )
 }
 
 function hasDynamicFields(requestBody = {}) {
