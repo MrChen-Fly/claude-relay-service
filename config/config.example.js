@@ -146,6 +146,19 @@ const config = {
         ttlSeconds: parseInt(process.env.OPENAI_L2_CACHE_CONTEXT_BUFFER_TTL_SECONDS) || 604800,
         maxItems: parseInt(process.env.OPENAI_L2_CACHE_CONTEXT_BUFFER_MAX_ITEMS) || 6
       }
+    },
+    l3: {
+      enabled: process.env.OPENAI_L3_CACHE_ENABLED !== 'false',
+      defaultTtlSeconds: parseInt(process.env.OPENAI_L3_CACHE_DEFAULT_TTL_SECONDS) || 3600,
+      embeddingsTtlSeconds: parseInt(process.env.OPENAI_L3_CACHE_EMBEDDINGS_TTL_SECONDS) || 604800,
+      lockTtlSeconds: parseInt(process.env.OPENAI_L3_CACHE_LOCK_TTL_SECONDS) || 15,
+      waitTimeoutMs: parseInt(process.env.OPENAI_L3_CACHE_WAIT_TIMEOUT_MS) || 3000,
+      waitPollMs: parseInt(process.env.OPENAI_L3_CACHE_WAIT_POLL_MS) || 100,
+      maxCacheableTemperature:
+        process.env.OPENAI_L3_CACHE_MAX_TEMPERATURE !== undefined &&
+        process.env.OPENAI_L3_CACHE_MAX_TEMPERATURE !== ''
+          ? parseFloat(process.env.OPENAI_L3_CACHE_MAX_TEMPERATURE)
+          : 0.3
     }
   },
 

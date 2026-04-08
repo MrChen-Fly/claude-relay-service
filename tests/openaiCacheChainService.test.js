@@ -12,6 +12,12 @@ jest.mock('../src/services/cache/openaiL2SemanticCacheService', () => ({
   extractSemanticText: jest.fn(),
   extractResponseText: jest.fn()
 }))
+jest.mock('../src/services/cache/openaiL3GlobalCacheService', () => ({
+  beginRequest: jest.fn(),
+  createCaptureDecision: jest.fn(),
+  storeResponse: jest.fn(),
+  finalizeRequest: jest.fn()
+}))
 jest.mock('../src/services/cache/gptcache/contextBufferService', () => ({
   getSnapshot: jest.fn(),
   rememberInteraction: jest.fn()
@@ -25,6 +31,7 @@ jest.mock('../src/utils/logger', () => ({
 
 const openaiL1CacheService = require('../src/services/cache/openaiL1CacheService')
 const openaiL2SemanticCacheService = require('../src/services/cache/openaiL2SemanticCacheService')
+const openaiL3GlobalCacheService = require('../src/services/cache/openaiL3GlobalCacheService')
 const contextBufferService = require('../src/services/cache/gptcache/contextBufferService')
 const openaiCacheChainService = require('../src/services/cache/gptcache/openaiCacheChainService')
 
@@ -95,9 +102,66 @@ describe('openaiCacheChainService', () => {
         })
       })
     )
+    expect(openaiL3GlobalCacheService.beginRequest).not.toHaveBeenCalled()
   })
 
-  it('stores upstream responses across L1, L2, and context buffer', async () => {
+  it('backfills L1 and L2 when L3 returns a global cache hit', async () => {
+    openaiL1CacheService.beginRequest.mockResolvedValue({
+      kind: 'miss',
+      cacheKey: 'l1-key-1'
+    })
+    openaiL2SemanticCacheService.beginRequest.mockResolvedValue({
+      kind: 'miss',
+      tenantId: 'api-key-1',
+      queryEmbedding: [0.1, 0.2]
+    })
+    openaiL3GlobalCacheService.beginRequest.mockResolvedValue({
+      kind: 'hit',
+      entry: {
+        statusCode: 200,
+        body: { id: 'global-cached' }
+      }
+    })
+
+    const result = await openaiCacheChainService.beginRequest({
+      tenantId: 'api-key-1',
+      provider: 'openai-responses',
+      endpoint: 'responses',
+      requestBody: {
+        input: 'hello'
+      },
+      requestHeaders: {},
+      fullAccount: {
+        baseApi: 'https://relay.example.com',
+        apiKey: 'secret'
+      }
+    })
+
+    expect(result.kind).toBe('hit')
+    expect(result.source).toBe('l3')
+    expect(openaiL1CacheService.storeResponse).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'miss',
+        cacheKey: 'l1-key-1'
+      }),
+      expect.objectContaining({
+        statusCode: 200,
+        body: { id: 'global-cached' }
+      })
+    )
+    expect(openaiL2SemanticCacheService.storeResponse).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'miss',
+        tenantId: 'api-key-1'
+      }),
+      expect.objectContaining({
+        statusCode: 200,
+        body: { id: 'global-cached' }
+      })
+    )
+  })
+
+  it('stores upstream responses across L1, L2, L3, and context buffer', async () => {
     const result = await openaiCacheChainService.storeUpstreamResponse(
       {
         l1Decision: {
@@ -107,6 +171,10 @@ describe('openaiCacheChainService', () => {
         l2Decision: {
           kind: 'miss',
           tenantId: 'api-key-1'
+        },
+        l3Decision: {
+          kind: 'miss',
+          cacheKey: 'l3-key-1'
         },
         semanticRequestText: 'user: hello world',
         bufferSnapshot: {
@@ -128,6 +196,7 @@ describe('openaiCacheChainService', () => {
     expect(result.stored).toBe(true)
     expect(openaiL1CacheService.storeResponse).toHaveBeenCalled()
     expect(openaiL2SemanticCacheService.storeResponse).toHaveBeenCalled()
+    expect(openaiL3GlobalCacheService.storeResponse).toHaveBeenCalled()
     expect(contextBufferService.rememberInteraction).toHaveBeenCalledWith(
       expect.objectContaining({
         bufferKey: 'buffer-key-1'
@@ -151,6 +220,10 @@ describe('openaiCacheChainService', () => {
       tenantId: 'api-key-1',
       queryEmbedding: [0.1, 0.2]
     })
+    openaiL3GlobalCacheService.createCaptureDecision.mockResolvedValue({
+      kind: 'miss',
+      cacheKey: 'stream-l3-key'
+    })
 
     const result = await openaiCacheChainService.prepareStreamWriteback(
       {
@@ -161,6 +234,10 @@ describe('openaiCacheChainService', () => {
           reason: 'stream_request'
         },
         l2Decision: {
+          kind: 'bypass',
+          reason: 'stream_request'
+        },
+        l3Decision: {
           kind: 'bypass',
           reason: 'stream_request'
         },
@@ -193,6 +270,12 @@ describe('openaiCacheChainService', () => {
         })
       })
     )
+    expect(openaiL3GlobalCacheService.createCaptureDecision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tenantId: 'api-key-1',
+        endpoint: 'responses'
+      })
+    )
     expect(result.l1Decision).toEqual(
       expect.objectContaining({
         kind: 'miss',
@@ -205,6 +288,12 @@ describe('openaiCacheChainService', () => {
         tenantId: 'api-key-1'
       })
     )
+    expect(result.l3Decision).toEqual(
+      expect.objectContaining({
+        kind: 'miss',
+        cacheKey: 'stream-l3-key'
+      })
+    )
   })
 
   it('enables stream lookup on the cache services when replay is supported upstream', async () => {
@@ -215,6 +304,10 @@ describe('openaiCacheChainService', () => {
     openaiL2SemanticCacheService.beginRequest.mockResolvedValue({
       kind: 'miss',
       tenantId: 'api-key-1'
+    })
+    openaiL3GlobalCacheService.beginRequest.mockResolvedValue({
+      kind: 'miss',
+      cacheKey: 'l3-stream-key'
     })
 
     await openaiCacheChainService.beginRequest({
@@ -240,6 +333,12 @@ describe('openaiCacheChainService', () => {
       })
     )
     expect(openaiL2SemanticCacheService.beginRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        isStream: true,
+        allowStreamLookup: true
+      })
+    )
+    expect(openaiL3GlobalCacheService.beginRequest).toHaveBeenCalledWith(
       expect.objectContaining({
         isStream: true,
         allowStreamLookup: true

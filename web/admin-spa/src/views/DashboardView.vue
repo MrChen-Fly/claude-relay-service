@@ -483,6 +483,11 @@
                 L2 {{ l2CacheMetrics.enabled ? '开启' : '关闭' }}
               </span>
               <span
+                class="rounded-full border border-violet-200 bg-violet-50 px-3 py-1 font-medium text-violet-700 dark:border-violet-900/60 dark:bg-violet-900/20 dark:text-violet-300"
+              >
+                L3 {{ l3CacheMetrics.enabled ? '开启' : '关闭' }}
+              </span>
+              <span
                 class="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 font-medium text-amber-700 dark:border-amber-900/60 dark:bg-amber-900/20 dark:text-amber-300"
               >
                 {{ l2ModeLabel }}
@@ -520,7 +525,7 @@
             </div>
           </div>
 
-          <div class="grid grid-cols-1 gap-4 xl:grid-cols-2">
+          <div class="grid grid-cols-1 gap-4 xl:grid-cols-3">
             <div
               class="rounded-3xl border border-sky-100 bg-gradient-to-br from-sky-50 via-white to-white p-5 dark:border-sky-900/40 dark:from-sky-950/20 dark:via-gray-900 dark:to-gray-900"
             >
@@ -652,9 +657,70 @@
                 </p>
               </div>
             </div>
+
+            <div
+              class="rounded-3xl border border-violet-100 bg-gradient-to-br from-violet-50 via-white to-white p-5 dark:border-violet-900/40 dark:from-violet-950/20 dark:via-gray-900 dark:to-gray-900"
+            >
+              <div class="flex flex-col gap-4">
+                <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                  <div>
+                    <div class="flex flex-wrap items-center gap-2">
+                      <p class="text-sm font-semibold text-violet-700 dark:text-violet-300">
+                        L3 全局缓存
+                      </p>
+                      <span :class="l3CacheSummary.badgeClass">{{ l3CacheSummary.state }}</span>
+                    </div>
+                    <p class="mt-3 text-base font-semibold text-gray-900 dark:text-gray-100">
+                      {{ l3CacheSummary.summary }}
+                    </p>
+                    <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                      {{ l3CacheSummary.detail }}
+                    </p>
+                  </div>
+                  <div class="text-left lg:text-right">
+                    <p class="text-xs font-medium text-gray-500 dark:text-gray-400">命中率</p>
+                    <p class="mt-1 text-3xl font-bold text-violet-600 dark:text-violet-300">
+                      {{ formatRatioPercent(l3CacheMetrics.rates.hitRate) }}
+                    </p>
+                  </div>
+                </div>
+
+                <div class="grid grid-cols-2 gap-3">
+                  <div class="rounded-2xl bg-white/80 px-4 py-3 shadow-sm dark:bg-slate-950/60">
+                    <p class="text-xs text-gray-500 dark:text-gray-400">命中</p>
+                    <p class="mt-1 text-lg font-semibold text-gray-900 dark:text-gray-100">
+                      {{ formatNumber(l3CacheMetrics.counters.cache_hit_exact) }}
+                    </p>
+                  </div>
+                  <div class="rounded-2xl bg-white/80 px-4 py-3 shadow-sm dark:bg-slate-950/60">
+                    <p class="text-xs text-gray-500 dark:text-gray-400">查找</p>
+                    <p class="mt-1 text-lg font-semibold text-gray-900 dark:text-gray-100">
+                      {{ formatNumber(l3CacheMetrics.totals.lookups) }}
+                    </p>
+                  </div>
+                  <div class="rounded-2xl bg-white/80 px-4 py-3 shadow-sm dark:bg-slate-950/60">
+                    <p class="text-xs text-gray-500 dark:text-gray-400">写入</p>
+                    <p class="mt-1 text-lg font-semibold text-gray-900 dark:text-gray-100">
+                      {{ formatNumber(l3CacheMetrics.counters.cache_write) }}
+                    </p>
+                  </div>
+                  <div class="rounded-2xl bg-white/80 px-4 py-3 shadow-sm dark:bg-slate-950/60">
+                    <p class="text-xs text-gray-500 dark:text-gray-400">Bypass</p>
+                    <p class="mt-1 text-lg font-semibold text-gray-900 dark:text-gray-100">
+                      {{ formatNumber(l3CacheMetrics.counters.cache_bypass) }}
+                    </p>
+                  </div>
+                </div>
+
+                <p class="text-xs text-gray-500 dark:text-gray-400">
+                  Miss {{ formatNumber(l3CacheMetrics.counters.cache_miss) }} · 请求
+                  {{ formatNumber(l3CacheMetrics.totals.requests) }}
+                </p>
+              </div>
+            </div>
           </div>
 
-          <div class="grid grid-cols-1 gap-3 xl:grid-cols-2">
+          <div class="grid grid-cols-1 gap-3 xl:grid-cols-3">
             <div
               class="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-slate-800 dark:bg-slate-900/40"
             >
@@ -732,6 +798,46 @@
               </div>
               <p v-else class="mt-3 text-sm text-gray-500 dark:text-gray-400">
                 暂时没有明显的 L2 绕过原因。
+              </p>
+            </div>
+
+            <div
+              class="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-slate-800 dark:bg-slate-900/40"
+            >
+              <div class="flex items-center justify-between gap-3">
+                <div>
+                  <p class="text-sm font-semibold text-gray-800 dark:text-gray-100">
+                    L3 主要绕过原因
+                  </p>
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    如果 L3 一直没开始共享命中，优先先看这里。
+                  </p>
+                </div>
+                <span class="text-xs text-gray-500 dark:text-gray-400">
+                  总计 {{ formatNumber(l3CacheMetrics.counters.cache_bypass) }}
+                </span>
+              </div>
+              <div v-if="l3BypassReasons.length > 0" class="mt-3 space-y-2">
+                <div
+                  v-for="item in l3BypassReasons"
+                  :key="`l3-${item.reason}`"
+                  class="flex items-center justify-between rounded-xl bg-white px-3 py-2 text-sm shadow-sm dark:bg-slate-950/60"
+                >
+                  <div class="min-w-0">
+                    <p class="truncate font-medium text-gray-800 dark:text-gray-100">
+                      {{ formatCacheBypassReason(item.reason) }}
+                    </p>
+                    <p class="mt-0.5 truncate text-xs text-gray-400 dark:text-gray-500">
+                      {{ item.reason }}
+                    </p>
+                  </div>
+                  <span class="ml-3 text-sm font-semibold text-violet-600 dark:text-violet-300">
+                    {{ formatNumber(item.count) }}
+                  </span>
+                </div>
+              </div>
+              <p v-else class="mt-3 text-sm text-gray-500 dark:text-gray-400">
+                暂时没有明显的 L3 绕过原因。
               </p>
             </div>
           </div>
@@ -1157,6 +1263,23 @@ const emptyCacheMetrics = {
       semanticHitRate: 0,
       embeddingHitRate: 0
     }
+  },
+  l3: {
+    enabled: true,
+    bypassReasons: [],
+    counters: {
+      cache_hit_exact: 0,
+      cache_miss: 0,
+      cache_bypass: 0,
+      cache_write: 0
+    },
+    totals: {
+      lookups: 0,
+      requests: 0
+    },
+    rates: {
+      hitRate: 0
+    }
   }
 }
 
@@ -1250,6 +1373,8 @@ const buildCacheBadgeClass = (tone) => {
     sky: 'rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-xs font-semibold text-sky-700 dark:border-sky-900/60 dark:bg-sky-900/20 dark:text-sky-300',
     emerald:
       'rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-900/20 dark:text-emerald-300',
+    violet:
+      'rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-xs font-semibold text-violet-700 dark:border-violet-900/60 dark:bg-violet-900/20 dark:text-violet-300',
     amber:
       'rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700 dark:border-amber-900/60 dark:bg-amber-900/20 dark:text-amber-300'
   }
@@ -1335,8 +1460,10 @@ const chartColors = computed(() => ({
 
 const l1CacheMetrics = computed(() => dashboardData.value.cacheMetrics?.l1 || emptyCacheMetrics.l1)
 const l2CacheMetrics = computed(() => dashboardData.value.cacheMetrics?.l2 || emptyCacheMetrics.l2)
+const l3CacheMetrics = computed(() => dashboardData.value.cacheMetrics?.l3 || emptyCacheMetrics.l3)
 const l1BypassReasons = computed(() => (l1CacheMetrics.value.bypassReasons || []).slice(0, 3))
 const l2BypassReasons = computed(() => (l2CacheMetrics.value.bypassReasons || []).slice(0, 3))
+const l3BypassReasons = computed(() => (l3CacheMetrics.value.bypassReasons || []).slice(0, 3))
 const l2PrimaryMetricLabel = computed(() => '语义命中率')
 const l2PrimaryMetricCountLabel = computed(() => '语义命中')
 const l2PrimaryMetricRate = computed(() => l2CacheMetrics.value.rates.semanticHitRate)
@@ -1459,17 +1586,73 @@ const l2CacheSummary = computed(() => {
   }
 })
 
+const l3CacheSummary = computed(() => {
+  const metrics = l3CacheMetrics.value
+  const hits = toSafeNumber(metrics.counters.cache_hit_exact)
+  const bypass = toSafeNumber(metrics.counters.cache_bypass)
+  const writes = toSafeNumber(metrics.counters.cache_write)
+  const lookups = toSafeNumber(metrics.totals.lookups)
+  const topReason = getTopBypassReason(metrics.bypassReasons)
+
+  if (!metrics.enabled) {
+    return {
+      state: '已关闭',
+      summary: 'L3 当前未参与全局共享缓存。',
+      detail: '如果要观察 L3，先确认服务端是否开启了全局缓存。',
+      badgeClass: buildCacheBadgeClass('slate')
+    }
+  }
+
+  if (hits > 0) {
+    return {
+      state: '已有命中',
+      summary: 'L3 已经开始在 API Key 之间复用全局缓存。',
+      detail: `已命中 ${formatNumber(hits)} 次，命中率 ${formatRatioPercent(metrics.rates.hitRate)}，继续看它是否持续带来跨 key 复用收益。`,
+      badgeClass: buildCacheBadgeClass('violet')
+    }
+  }
+
+  if (lookups > 0 || writes > 0) {
+    return {
+      state: '已开始查缓存',
+      summary: 'L3 已经进入全局查找和写入阶段。',
+      detail: `当前查找 ${formatNumber(lookups)} 次、写入 ${formatNumber(writes)} 次，下一步应该观察是否出现首个全局命中。`,
+      badgeClass: buildCacheBadgeClass('emerald')
+    }
+  }
+
+  if (bypass > 0) {
+    return {
+      state: '大多绕过',
+      summary: '当前请求主要绕过了 L3。',
+      detail: topReason
+        ? `最主要原因是 ${formatCacheBypassReason(topReason.reason)}，已出现 ${formatNumber(topReason.count)} 次。`
+        : '全局缓存还没真正参与查找，优先先看 bypass 原因。',
+      badgeClass: buildCacheBadgeClass('amber')
+    }
+  }
+
+  return {
+    state: '等待样本',
+    summary: '还没有足够的数据判断 L3 状态。',
+    detail: '先观察请求是否开始进入全局查找、写入或 bypass。',
+    badgeClass: buildCacheBadgeClass('slate')
+  }
+})
+
 const primaryBypassReason = computed(() => {
   const reasonMap = new Map()
 
-  ;[...l1BypassReasons.value, ...l2BypassReasons.value].forEach((item) => {
-    if (!item?.reason) {
-      return
-    }
+  ;[...l1BypassReasons.value, ...l2BypassReasons.value, ...l3BypassReasons.value].forEach(
+    (item) => {
+      if (!item?.reason) {
+        return
+      }
 
-    const count = toSafeNumber(item.count)
-    reasonMap.set(item.reason, (reasonMap.get(item.reason) || 0) + count)
-  })
+      const count = toSafeNumber(item.count)
+      reasonMap.set(item.reason, (reasonMap.get(item.reason) || 0) + count)
+    }
+  )
 
   let topReason = null
   reasonMap.forEach((count, reason) => {
@@ -1484,31 +1667,35 @@ const primaryBypassReason = computed(() => {
 const cacheOverview = computed(() => {
   const l1Metrics = l1CacheMetrics.value
   const l2Metrics = l2CacheMetrics.value
+  const l3Metrics = l3CacheMetrics.value
   const l1Hits = toSafeNumber(l1Metrics.counters.cache_hit_exact)
   const l1Lookups = toSafeNumber(l1Metrics.totals.lookups)
   const l1Writes = toSafeNumber(l1Metrics.counters.cache_write)
   const l2Hits = toSafeNumber(l2Metrics.counters.cache_hit_semantic)
   const l2Lookups = toSafeNumber(l2Metrics.totals.lookups)
   const embeddingRequests = toSafeNumber(l2Metrics.totals.embeddingRequests)
+  const l3Hits = toSafeNumber(l3Metrics.counters.cache_hit_exact)
+  const l3Lookups = toSafeNumber(l3Metrics.totals.lookups)
+  const l3Writes = toSafeNumber(l3Metrics.counters.cache_write)
   const topReason = primaryBypassReason.value
   const blocker = topReason
     ? `${formatCacheBypassReason(topReason.reason)} · ${formatNumber(topReason.count)}`
     : '暂无明显阻塞'
 
-  if (!l1Metrics.enabled && !l2Metrics.enabled) {
+  if (!l1Metrics.enabled && !l2Metrics.enabled && !l3Metrics.enabled) {
     return {
-      summary: 'L1 和 L2 都已关闭，当前不会产生缓存收益。',
+      summary: 'L1、L2、L3 都已关闭，当前不会产生缓存收益。',
       stage: '缓存关闭',
       focus: '先确认开关配置',
       blocker: '功能未启用'
     }
   }
 
-  if (l1Hits > 0 || l2Hits > 0) {
+  if (l1Hits > 0 || l2Hits > 0 || l3Hits > 0) {
     return {
       summary: '缓存已经开始产生实际命中收益，可以优先观察命中率和写入是否持续增长。',
       stage: '开始命中',
-      focus: '继续看命中率和写入',
+      focus: l3Hits > 0 ? '继续看 L3 共享命中' : '继续看命中率和写入',
       blocker
     }
   }
@@ -1527,6 +1714,15 @@ const cacheOverview = computed(() => {
       summary: 'L1 已进入查找和写入阶段，下一步应该开始出现重复请求命中。',
       stage: '精确缓存预热',
       focus: '看 L1 是否开始命中',
+      blocker
+    }
+  }
+
+  if (l3Lookups > 0 || l3Writes > 0) {
+    return {
+      summary: 'L3 已进入全局查找和写入阶段，下一步应该开始出现跨 API Key 的共享命中。',
+      stage: '全局缓存预热',
+      focus: '看 L3 是否开始命中',
       blocker
     }
   }

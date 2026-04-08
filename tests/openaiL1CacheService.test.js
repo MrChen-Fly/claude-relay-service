@@ -60,6 +60,29 @@ describe('openaiL1CacheService', () => {
     expect(first.cacheKey).toBe(second.cacheKey)
   })
 
+  it('keeps equivalent responses input shapes on the same canonical cache key', () => {
+    const first = openaiL1CacheService.buildCachePlan(baseContext)
+    const second = openaiL1CacheService.buildCachePlan({
+      ...baseContext,
+      requestBody: {
+        model: 'gpt-5',
+        input: [
+          {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: ' hello world ' }]
+          }
+        ],
+        temperature: 0.2,
+        stream: false
+      }
+    })
+
+    expect(first.cacheable).toBe(true)
+    expect(second.cacheable).toBe(true)
+    expect(first.cacheKey).toBe(second.cacheKey)
+  })
+
   it('bypasses stream requests', () => {
     const plan = openaiL1CacheService.buildCachePlan({
       ...baseContext,

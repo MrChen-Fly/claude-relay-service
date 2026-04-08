@@ -4156,6 +4156,49 @@ redisClient.incrementOpenAIL1CacheMetric = async function (metricName) {
   }
 }
 
+redisClient.getOpenAIL3CacheEntry = async function (cacheKey) {
+  try {
+    const client = this.getClient()
+    if (!client) {
+      return null
+    }
+
+    return parseOpenAICacheValue(await client.get(cacheKey), cacheKey, 'OpenAI L3 cache entry')
+  } catch (error) {
+    logger.error(`Failed to read OpenAI L3 cache entry ${cacheKey}:`, error)
+    return null
+  }
+}
+
+redisClient.setOpenAIL3CacheEntry = async function (cacheKey, payload, ttlSeconds) {
+  try {
+    const client = this.getClient()
+    if (!client) {
+      return false
+    }
+
+    await client.set(cacheKey, JSON.stringify(payload), 'EX', ttlSeconds)
+    return true
+  } catch (error) {
+    logger.error(`Failed to write OpenAI L3 cache entry ${cacheKey}:`, error)
+    return false
+  }
+}
+
+redisClient.incrementOpenAIL3CacheMetric = async function (metricName) {
+  try {
+    const client = this.getClient()
+    if (!client) {
+      return 0
+    }
+
+    return await client.hincrby('metrics:openai:l3', metricName, 1)
+  } catch (error) {
+    logger.error(`Failed to increment OpenAI L3 cache metric ${metricName}:`, error)
+    return 0
+  }
+}
+
 function normalizeOpenAICacheMetricSuffix(value) {
   if (typeof value !== 'string') {
     return ''
@@ -4253,6 +4296,23 @@ redisClient.getOpenAICacheMetrics = async function () {
         semanticHitRate: 0,
         embeddingHitRate: 0
       }
+    },
+    l3: {
+      enabled: config.openaiCache?.l3?.enabled !== false,
+      bypassReasons: [],
+      counters: {
+        cache_hit_exact: 0,
+        cache_miss: 0,
+        cache_bypass: 0,
+        cache_write: 0
+      },
+      totals: {
+        lookups: 0,
+        requests: 0
+      },
+      rates: {
+        hitRate: 0
+      }
     }
   }
 
@@ -4262,9 +4322,10 @@ redisClient.getOpenAICacheMetrics = async function () {
       return defaultMetrics
     }
 
-    const [l1RawMetrics, l2RawMetrics] = await Promise.all([
+    const [l1RawMetrics, l2RawMetrics, l3RawMetrics] = await Promise.all([
       client.hgetall('metrics:openai:l1'),
-      client.hgetall('metrics:openai:l2')
+      client.hgetall('metrics:openai:l2'),
+      client.hgetall('metrics:openai:l3')
     ])
 
     const l1Counters = buildOpenAICacheMetricCounters(l1RawMetrics, [
@@ -4281,12 +4342,20 @@ redisClient.getOpenAICacheMetrics = async function () {
       'embedding_hit',
       'embedding_miss'
     ])
+    const l3Counters = buildOpenAICacheMetricCounters(l3RawMetrics, [
+      'cache_hit_exact',
+      'cache_miss',
+      'cache_bypass',
+      'cache_write'
+    ])
     const l1BypassReasons = buildOpenAICacheBypassReasons(l1RawMetrics)
     const l2BypassReasons = buildOpenAICacheBypassReasons(l2RawMetrics)
+    const l3BypassReasons = buildOpenAICacheBypassReasons(l3RawMetrics)
 
     const l1Lookups = l1Counters.cache_hit_exact + l1Counters.cache_miss
     const l2Lookups = l2Counters.cache_hit_semantic + l2Counters.cache_miss
     const l2EmbeddingRequests = l2Counters.embedding_hit + l2Counters.embedding_miss
+    const l3Lookups = l3Counters.cache_hit_exact + l3Counters.cache_miss
 
     return {
       l1: {
@@ -4314,6 +4383,18 @@ redisClient.getOpenAICacheMetrics = async function () {
           semanticHitRate: calculateOpenAICacheRate(l2Counters.cache_hit_semantic, l2Lookups),
           embeddingHitRate: calculateOpenAICacheRate(l2Counters.embedding_hit, l2EmbeddingRequests)
         }
+      },
+      l3: {
+        ...defaultMetrics.l3,
+        bypassReasons: l3BypassReasons,
+        counters: l3Counters,
+        totals: {
+          lookups: l3Lookups,
+          requests: l3Lookups + l3Counters.cache_bypass
+        },
+        rates: {
+          hitRate: calculateOpenAICacheRate(l3Counters.cache_hit_exact, l3Lookups)
+        }
       }
     }
   } catch (error) {
@@ -4327,6 +4408,14 @@ redisClient.acquireOpenAIL1CacheLock = async function (lockKey, lockValue, ttlMs
 }
 
 redisClient.releaseOpenAIL1CacheLock = async function (lockKey, lockValue) {
+  return await this.releaseAccountLock(lockKey, lockValue)
+}
+
+redisClient.acquireOpenAIL3CacheLock = async function (lockKey, lockValue, ttlMs) {
+  return await this.setAccountLock(lockKey, lockValue, ttlMs)
+}
+
+redisClient.releaseOpenAIL3CacheLock = async function (lockKey, lockValue) {
   return await this.releaseAccountLock(lockKey, lockValue)
 }
 
@@ -4538,6 +4627,15 @@ redisClient.incrementOpenAIL2CacheBypassReason = async function (reason) {
   }
 
   return await this.incrementOpenAIL2CacheMetric(metricName)
+}
+
+redisClient.incrementOpenAIL3CacheBypassReason = async function (reason) {
+  const metricName = buildOpenAICacheBypassReasonMetric(reason)
+  if (!metricName) {
+    return 0
+  }
+
+  return await this.incrementOpenAIL3CacheMetric(metricName)
 }
 
 // 分布式锁相关方法

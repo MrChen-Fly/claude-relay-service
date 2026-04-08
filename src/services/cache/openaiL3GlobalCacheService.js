@@ -31,21 +31,30 @@ const ALWAYS_DYNAMIC_REQUEST_FIELDS = ['background', 'web_search_options']
 
 function getSettings() {
   return {
-    enabled: config.openaiCache?.enabled !== false,
-    defaultTtlSeconds: config.openaiCache?.defaultTtlSeconds || 86400,
-    embeddingsTtlSeconds: config.openaiCache?.embeddingsTtlSeconds || 604800,
-    lockTtlSeconds: config.openaiCache?.lockTtlSeconds || 15,
-    waitTimeoutMs: config.openaiCache?.waitTimeoutMs || 3000,
-    waitPollMs: config.openaiCache?.waitPollMs || 100,
+    enabled: config.openaiCache?.l3?.enabled !== false,
+    defaultTtlSeconds: config.openaiCache?.l3?.defaultTtlSeconds || 3600,
+    embeddingsTtlSeconds: config.openaiCache?.l3?.embeddingsTtlSeconds || 604800,
+    lockTtlSeconds: config.openaiCache?.l3?.lockTtlSeconds || 15,
+    waitTimeoutMs: config.openaiCache?.l3?.waitTimeoutMs || 3000,
+    waitPollMs: config.openaiCache?.l3?.waitPollMs || 100,
     maxCacheableTemperature:
-      typeof config.openaiCache?.maxCacheableTemperature === 'number'
-        ? config.openaiCache.maxCacheableTemperature
+      typeof config.openaiCache?.l3?.maxCacheableTemperature === 'number'
+        ? config.openaiCache.l3.maxCacheableTemperature
         : 0.3
   }
 }
 
 function normalizeString(value) {
   return typeof value === 'string' ? value.trim() : value
+}
+
+function getNumericValue(value) {
+  if (value === undefined || value === null || value === '') {
+    return null
+  }
+
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
 }
 
 function normalizeScalarValue(key, value) {
@@ -148,15 +157,6 @@ function hasDynamicFields(requestBody = {}) {
   return hasUnsafeToolDefinitions(requestBody)
 }
 
-function getNumericValue(value) {
-  if (value === undefined || value === null || value === '') {
-    return null
-  }
-
-  const parsed = Number(value)
-  return Number.isFinite(parsed) ? parsed : null
-}
-
 function normalizeEndpointSegment(endpoint = 'responses') {
   return String(endpoint).replace(/\//g, '__')
 }
@@ -200,37 +200,27 @@ async function sleep(ms) {
 }
 
 async function incrementMetric(name) {
-  if (typeof redis.incrementOpenAIL1CacheMetric !== 'function') {
+  if (typeof redis.incrementOpenAIL3CacheMetric !== 'function') {
     return
   }
-  await redis.incrementOpenAIL1CacheMetric(name)
+  await redis.incrementOpenAIL3CacheMetric(name)
 }
 
 async function incrementBypassMetrics(reason) {
   await incrementMetric('cache_bypass')
 
-  if (typeof redis.incrementOpenAIL1CacheBypassReason !== 'function' || !reason) {
+  if (typeof redis.incrementOpenAIL3CacheBypassReason !== 'function' || !reason) {
     return
   }
 
-  await redis.incrementOpenAIL1CacheBypassReason(reason)
+  await redis.incrementOpenAIL3CacheBypassReason(reason)
 }
 
-/**
- * Builds the normalized cache plan for a request.
- *
- * @param {Object} context - Request cache context.
- * @returns {Object} Cache plan or bypass reason.
- */
 function buildCachePlan(context = {}) {
   const settings = getSettings()
 
   if (!settings.enabled) {
     return { cacheable: false, reason: 'cache_disabled' }
-  }
-
-  if (!context.tenantId) {
-    return { cacheable: false, reason: 'missing_tenant' }
   }
 
   if ((context.isStream || context.requestBody?.stream) && !context.allowStreamLookup) {
@@ -273,8 +263,8 @@ function buildCachePlan(context = {}) {
     lockTtlMs: settings.lockTtlSeconds * 1000,
     waitTimeoutMs: settings.waitTimeoutMs,
     waitPollMs: settings.waitPollMs,
-    cacheKey: `cache:openai:l1:${CACHE_VERSION}:${context.tenantId}:${provider}:${endpointSegment}:${hash}`,
-    lockKey: `lock:openai:l1:${CACHE_VERSION}:${context.tenantId}:${provider}:${endpointSegment}:${hash}`,
+    cacheKey: `cache:openai:l3:${CACHE_VERSION}:${provider}:${endpointSegment}:${hash}`,
+    lockKey: `lock:openai:l3:${CACHE_VERSION}:${provider}:${endpointSegment}:${hash}`,
     signature
   }
 }
@@ -300,7 +290,7 @@ async function waitForFill(plan) {
 
   while (Date.now() < deadline) {
     await sleep(plan.waitPollMs)
-    const entry = await redis.getOpenAIL1CacheEntry(plan.cacheKey)
+    const entry = await redis.getOpenAIL3CacheEntry(plan.cacheKey)
     if (entry) {
       return entry
     }
@@ -309,12 +299,6 @@ async function waitForFill(plan) {
   return null
 }
 
-/**
- * Resolves whether a request should hit cache, wait, or go upstream.
- *
- * @param {Object} context - Request cache context.
- * @returns {Promise<Object>} Cache hit, miss, or bypass decision.
- */
 async function beginRequest(context = {}) {
   const plan = buildCachePlan(context)
   if (!plan.cacheable) {
@@ -322,14 +306,14 @@ async function beginRequest(context = {}) {
     return { kind: 'bypass', reason: plan.reason }
   }
 
-  const existingEntry = await redis.getOpenAIL1CacheEntry(plan.cacheKey)
+  const existingEntry = await redis.getOpenAIL3CacheEntry(plan.cacheKey)
   if (existingEntry) {
     await incrementMetric('cache_hit_exact')
     return { kind: 'hit', entry: existingEntry, cacheKey: plan.cacheKey }
   }
 
   const lockValue = createLockValue()
-  const lockAcquired = await redis.acquireOpenAIL1CacheLock(plan.lockKey, lockValue, plan.lockTtlMs)
+  const lockAcquired = await redis.acquireOpenAIL3CacheLock(plan.lockKey, lockValue, plan.lockTtlMs)
   if (!lockAcquired) {
     const waitedEntry = await waitForFill(plan)
     if (waitedEntry) {
@@ -362,13 +346,6 @@ async function createCaptureDecision(context = {}) {
   }
 }
 
-/**
- * Stores a successful non-stream response in Redis.
- *
- * @param {Object} decision - Cache decision from beginRequest().
- * @param {Object} responseContext - Response payload to cache.
- * @returns {Promise<Object>} Store result.
- */
 async function storeResponse(decision, responseContext = {}) {
   if (!decision || decision.kind !== 'miss') {
     return { stored: false }
@@ -384,7 +361,7 @@ async function storeResponse(decision, responseContext = {}) {
     return { stored: false }
   }
 
-  await redis.setOpenAIL1CacheEntry(
+  await redis.setOpenAIL3CacheEntry(
     decision.cacheKey,
     {
       statusCode: responseContext.statusCode,
@@ -404,33 +381,12 @@ async function storeResponse(decision, responseContext = {}) {
   return { stored: true }
 }
 
-/**
- * Releases the in-flight cache reservation when owned by the caller.
- *
- * @param {Object|null} decision - Cache decision from beginRequest().
- * @returns {Promise<void>}
- */
 async function finalizeRequest(decision) {
   if (!decision?.lockAcquired || !decision.lockKey || !decision.lockValue) {
     return
   }
 
-  await redis.releaseOpenAIL1CacheLock(decision.lockKey, decision.lockValue)
-}
-
-/**
- * Replays a cached response through an Express response object.
- *
- * @param {Object} res - Express response.
- * @param {Object} entry - Cached response entry.
- * @returns {Object} Express response.
- */
-function replayCachedResponse(res, entry = {}) {
-  for (const [headerName, headerValue] of Object.entries(entry.headers || {})) {
-    res.setHeader(headerName, headerValue)
-  }
-
-  return res.status(entry.statusCode || 200).json(entry.body)
+  await redis.releaseOpenAIL3CacheLock(decision.lockKey, decision.lockValue)
 }
 
 module.exports = {
@@ -438,6 +394,5 @@ module.exports = {
   beginRequest,
   createCaptureDecision,
   storeResponse,
-  finalizeRequest,
-  replayCachedResponse
+  finalizeRequest
 }

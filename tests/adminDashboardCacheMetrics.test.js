@@ -145,6 +145,23 @@ describe('admin dashboard cache metrics', () => {
           semanticHitRate: 0.3,
           embeddingHitRate: 0.8
         }
+      },
+      l3: {
+        enabled: true,
+        bypassReasons: [{ reason: 'temperature_too_high', count: 1 }],
+        counters: {
+          cache_hit_exact: 2,
+          cache_miss: 8,
+          cache_bypass: 1,
+          cache_write: 2
+        },
+        totals: {
+          lookups: 10,
+          requests: 11
+        },
+        rates: {
+          hitRate: 0.2
+        }
       }
     })
 
@@ -177,6 +194,12 @@ describe('admin dashboard cache metrics', () => {
           rates: expect.objectContaining({
             semanticHitRate: 0.3,
             embeddingHitRate: 0.8
+          })
+        }),
+        l3: expect.objectContaining({
+          bypassReasons: [{ reason: 'temperature_too_high', count: 1 }],
+          rates: expect.objectContaining({
+            hitRate: 0.2
           })
         })
       })

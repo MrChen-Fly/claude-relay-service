@@ -45,6 +45,23 @@ function createDefaultCacheMetrics() {
         semanticHitRate: 0,
         embeddingHitRate: 0
       }
+    },
+    l3: {
+      enabled: true,
+      bypassReasons: [],
+      counters: {
+        cache_hit_exact: 0,
+        cache_miss: 0,
+        cache_bypass: 0,
+        cache_write: 0
+      },
+      totals: {
+        lookups: 0,
+        requests: 0
+      },
+      rates: {
+        hitRate: 0
+      }
     }
   }
 }

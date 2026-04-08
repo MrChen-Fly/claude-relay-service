@@ -6,6 +6,7 @@ const logger = require('../../utils/logger')
 const ProxyHelper = require('../../utils/proxyHelper')
 const { filterForOpenAI } = require('../../utils/headerFilter')
 const { rankCandidates, cosineSimilarity } = require('./gptcache/similarityEvaluator')
+const { normalizeText, buildCanonicalPrompt } = require('./openaiCacheCanonicalizer')
 
 const CACHE_VERSION = 'v1'
 const RESPONSE_HEADER_WHITELIST = [
@@ -52,14 +53,6 @@ function getNumericValue(value) {
   return Number.isFinite(parsed) ? parsed : null
 }
 
-function normalizeText(text) {
-  if (typeof text !== 'string') {
-    return ''
-  }
-
-  return text.replace(/\s+/g, ' ').trim()
-}
-
 /**
  * Normalizes an embedding API base URL by trimming whitespace and trailing slashes.
  *
@@ -72,24 +65,6 @@ function normalizeBaseApi(baseApi) {
   }
 
   return baseApi.trim().replace(/\/+$/, '')
-}
-
-function mapMessageRole(role) {
-  if (role === 'developer') {
-    return 'system'
-  }
-  return role || 'user'
-}
-
-function isMessageInputItem(item) {
-  if (!item || typeof item !== 'object') {
-    return false
-  }
-
-  return (
-    item.type === 'message' ||
-    (item.type === undefined && (item.role || item.content !== undefined))
-  )
 }
 
 function hasDynamicFields(requestBody = {}) {
@@ -183,105 +158,19 @@ function pickReplayHeaders(headers = {}) {
   return normalized
 }
 
-function extractTextFromContent(content) {
-  if (typeof content === 'string') {
-    const text = normalizeText(content)
-    return text ? { supported: true, text } : { supported: true, text: '' }
-  }
-
-  if (Array.isArray(content)) {
-    const parts = []
-    for (const item of content) {
-      const result = extractTextFromContent(item)
-      if (!result.supported) {
-        return result
-      }
-      if (result.text) {
-        parts.push(result.text)
-      }
-    }
-    return { supported: true, text: parts.join(' ') }
-  }
-
-  if (!content || typeof content !== 'object') {
-    return { supported: false, reason: 'unsupported_content_type' }
-  }
-
-  const value =
-    typeof content.input_text === 'string'
-      ? content.input_text
-      : typeof content.output_text === 'string'
-        ? content.output_text
-        : typeof content.text === 'string'
-          ? content.text
-          : ''
-
-  if (!value) {
-    return { supported: false, reason: 'unsupported_content_part' }
-  }
-
-  return { supported: true, text: normalizeText(value) }
-}
-
 function extractSemanticText(requestBody = {}) {
-  const segments = []
+  const result = buildCanonicalPrompt(requestBody, {
+    semanticMode: true
+  })
 
-  if (requestBody.instructions !== undefined) {
-    if (typeof requestBody.instructions !== 'string') {
-      return { supported: false, reason: 'unsupported_instructions' }
-    }
-
-    const instructions = normalizeText(requestBody.instructions)
-    if (instructions) {
-      segments.push(`system: ${instructions}`)
-    }
+  if (!result.supported) {
+    return result
   }
 
-  const inputItems = Array.isArray(requestBody.input)
-    ? requestBody.input
-    : requestBody.input !== undefined && requestBody.input !== null
-      ? [requestBody.input]
-      : []
-
-  for (const item of inputItems) {
-    if (typeof item === 'string') {
-      const normalized = normalizeText(item)
-      if (normalized) {
-        segments.push(`user: ${normalized}`)
-      }
-      continue
-    }
-
-    if (!item || typeof item !== 'object') {
-      return { supported: false, reason: 'unsupported_input_item' }
-    }
-
-    if (isMessageInputItem(item)) {
-      const contentResult = extractTextFromContent(item.content)
-      if (!contentResult.supported) {
-        return contentResult
-      }
-      if (contentResult.text) {
-        segments.push(`${mapMessageRole(item.role)}: ${contentResult.text}`)
-      }
-      continue
-    }
-
-    const contentResult = extractTextFromContent(item)
-    if (!contentResult.supported) {
-      return { supported: false, reason: 'unsupported_input_item' }
-    }
-    if (contentResult.text) {
-      segments.push(`user: ${contentResult.text}`)
-    }
+  return {
+    supported: true,
+    text: result.text
   }
-
-  const text = segments.join('\n').trim()
-  if (!text) {
-    return { supported: false, reason: 'missing_text_input' }
-  }
-
-  return { supported: true, text }
 }
 
 function extractResponseText(responseBody = {}) {

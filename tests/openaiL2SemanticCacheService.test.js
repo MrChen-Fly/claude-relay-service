@@ -111,6 +111,21 @@ describe('openaiL2SemanticCacheService', () => {
     expect(plan.queryText).toContain('user: hello world')
   })
 
+  it('strips stable Codex CLI boilerplate from semantic instructions', () => {
+    const plan = openaiL2SemanticCacheService.buildCachePlan({
+      ...baseContext,
+      requestBody: {
+        ...baseContext.requestBody,
+        instructions:
+          "You are Codex, based on GPT-5. You are running as a coding agent in the Codex CLI on a user's computer.\n\n## General\n\n- When searching for text or files, prefer using `rg`.\n\n## Editing constraints\n\n- Default to ASCII when editing or creating files.",
+        input: 'hello world'
+      }
+    })
+
+    expect(plan.cacheable).toBe(true)
+    expect(plan.queryText).toBe('user: hello world')
+  })
+
   it('supports responses message items with structured content and no type field', () => {
     const plan = openaiL2SemanticCacheService.buildCachePlan({
       ...baseContext,
