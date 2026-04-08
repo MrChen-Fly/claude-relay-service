@@ -82,6 +82,14 @@ function mapMessageRole(role) {
   return role || 'user'
 }
 
+function isMessageInputItem(item) {
+  if (!item || typeof item !== 'object') {
+    return false
+  }
+
+  return item.type === 'message' || (item.type === undefined && (item.role || item.content !== undefined))
+}
+
 function hasDynamicFields(requestBody = {}) {
   return DYNAMIC_REQUEST_FIELDS.some((field) => {
     const value = requestBody[field]
@@ -246,7 +254,7 @@ function extractSemanticText(requestBody = {}) {
       return { supported: false, reason: 'unsupported_input_item' }
     }
 
-    if (item.type === 'message') {
+    if (isMessageInputItem(item)) {
       const contentResult = extractTextFromContent(item.content)
       if (!contentResult.supported) {
         return contentResult

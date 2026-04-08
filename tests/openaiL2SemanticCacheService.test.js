@@ -93,6 +93,48 @@ describe('openaiL2SemanticCacheService', () => {
     expect(plan.embeddingKey).toContain('cache:openai:l2:embed:v1:')
   })
 
+  it('supports responses message items without an explicit type field', () => {
+    const plan = openaiL2SemanticCacheService.buildCachePlan({
+      ...baseContext,
+      requestBody: {
+        ...baseContext.requestBody,
+        input: [
+          {
+            role: 'user',
+            content: '  hello world  '
+          }
+        ]
+      }
+    })
+
+    expect(plan.cacheable).toBe(true)
+    expect(plan.queryText).toContain('system: You are helpful.')
+    expect(plan.queryText).toContain('user: hello world')
+  })
+
+  it('supports responses message items with structured content and no type field', () => {
+    const plan = openaiL2SemanticCacheService.buildCachePlan({
+      ...baseContext,
+      requestBody: {
+        ...baseContext.requestBody,
+        input: [
+          {
+            role: 'developer',
+            content: [{ type: 'input_text', text: '  keep format stable  ' }]
+          },
+          {
+            role: 'user',
+            content: [{ type: 'input_text', text: '  hello world  ' }]
+          }
+        ]
+      }
+    })
+
+    expect(plan.cacheable).toBe(true)
+    expect(plan.queryText).toContain('system: keep format stable')
+    expect(plan.queryText).toContain('user: hello world')
+  })
+
   it('bypasses unsupported multimodal content', () => {
     const plan = openaiL2SemanticCacheService.buildCachePlan({
       ...baseContext,
