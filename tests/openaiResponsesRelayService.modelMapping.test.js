@@ -171,6 +171,102 @@ describe('openaiResponsesRelayService account model mapping integration', () => 
     expect(axios.mock.calls[0][0].data.messages).toEqual([{ role: 'user', content: 'hello' }])
   })
 
+  it('normalizes implicit function tools before sending responses requests upstream', async () => {
+    openaiResponsesAccountService.getAccount.mockResolvedValue({
+      id: 'responses-implicit-tools-1',
+      name: 'Implicit Tools Account',
+      baseApi: 'https://relay.example.com',
+      apiKey: 'secret-key',
+      providerEndpoint: 'responses'
+    })
+    axios.mockResolvedValue({
+      status: 200,
+      statusText: 'OK',
+      headers: {},
+      data: { ok: true }
+    })
+
+    jest.spyOn(openaiResponsesRelayService, '_throttledUpdateLastUsedAt').mockResolvedValue()
+    jest.spyOn(openaiResponsesRelayService, '_handleNormalResponse').mockResolvedValue('done')
+
+    const req = {
+      method: 'POST',
+      path: '/v1/responses',
+      headers: {},
+      body: {
+        model: 'gpt-5.4',
+        input: [{ role: 'user', content: 'hello' }],
+        stream: false
+      },
+      once: jest.fn(),
+      removeListener: jest.fn()
+    }
+    const res = {
+      once: jest.fn(),
+      removeListener: jest.fn()
+    }
+
+    const result = await openaiResponsesRelayService.handleRequest(
+      req,
+      res,
+      { id: 'responses-implicit-tools-1', name: 'Implicit Tools Account' },
+      { id: 'api-key-implicit-tools-1' },
+      {
+        attempts: [
+          {
+            path: '/v1/responses',
+            body: {
+              model: 'gpt-5.4',
+              input: [{ role: 'user', content: 'hello' }],
+              stream: false,
+              tools: [
+                {
+                  name: 'echo_note',
+                  description: 'Echo a note string back to the caller when explicitly needed.',
+                  parameters: {
+                    type: 'object',
+                    properties: {
+                      note: { type: 'string' }
+                    },
+                    required: ['note']
+                  },
+                  strict: true
+                }
+              ],
+              tool_choice: {
+                name: 'echo_note'
+              }
+            },
+            transform: 'passthrough',
+            requestedModel: 'gpt-5.4'
+          }
+        ]
+      }
+    )
+
+    expect(result).toBe('done')
+    expect(axios).toHaveBeenCalledTimes(1)
+    expect(axios.mock.calls[0][0].data.tools).toEqual([
+      {
+        type: 'function',
+        name: 'echo_note',
+        description: 'Echo a note string back to the caller when explicitly needed.',
+        parameters: {
+          type: 'object',
+          properties: {
+            note: { type: 'string' }
+          },
+          required: ['note']
+        },
+        strict: true
+      }
+    ])
+    expect(axios.mock.calls[0][0].data.tool_choice).toEqual({
+      type: 'function',
+      name: 'echo_note'
+    })
+  })
+
   it('retries the alternate protocol and converts the final response when the first endpoint is rejected', async () => {
     openaiResponsesAccountService.getAccount.mockResolvedValue({
       id: 'responses-3',

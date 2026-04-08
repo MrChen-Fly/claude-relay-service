@@ -266,7 +266,7 @@ describe('openaiL1CacheService', () => {
 
     expect(plan).toEqual({
       cacheable: false,
-      reason: 'dynamic_tools'
+      reason: 'tool_web_search_preview'
     })
   })
 
@@ -283,7 +283,25 @@ describe('openaiL1CacheService', () => {
 
     expect(plan).toEqual({
       cacheable: false,
-      reason: 'dynamic_tools'
+      reason: 'request_web_search_options'
+    })
+  })
+
+  it('bypasses malformed tool payloads with a specific reason', () => {
+    const plan = openaiL1CacheService.buildCachePlan({
+      ...baseContext,
+      requestBody: {
+        ...baseContext.requestBody,
+        tools: {
+          type: 'function',
+          name: 'shell_command'
+        }
+      }
+    })
+
+    expect(plan).toEqual({
+      cacheable: false,
+      reason: 'tool_invalid_payload'
     })
   })
 

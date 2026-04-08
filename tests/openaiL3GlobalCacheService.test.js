@@ -142,6 +142,38 @@ describe('openaiL3GlobalCacheService', () => {
     expect(plan.cacheKey).toContain('cache:openai:l3:v1:openai:responses:')
   })
 
+  it('bypasses non-function tools with a specific reason', () => {
+    const plan = openaiL3GlobalCacheService.buildCachePlan({
+      ...baseContext,
+      requestBody: {
+        ...baseContext.requestBody,
+        tools: [{ type: 'web_search_preview' }]
+      }
+    })
+
+    expect(plan).toEqual({
+      cacheable: false,
+      reason: 'tool_web_search_preview'
+    })
+  })
+
+  it('bypasses request-level dynamic search options with a specific reason', () => {
+    const plan = openaiL3GlobalCacheService.buildCachePlan({
+      ...baseContext,
+      requestBody: {
+        ...baseContext.requestBody,
+        web_search_options: {
+          search_context_size: 'high'
+        }
+      }
+    })
+
+    expect(plan).toEqual({
+      cacheable: false,
+      reason: 'request_web_search_options'
+    })
+  })
+
   it('does not require tenant id for global cache plans', () => {
     const plan = openaiL3GlobalCacheService.buildCachePlan(baseContext)
 

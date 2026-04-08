@@ -19,6 +19,7 @@ const {
   normalizeTargetPath,
   shouldRetryWithAlternateProtocol
 } = require('../openaiProtocol/upstreamProtocolHelper')
+const { normalizeResponsesToolingRequest } = require('../cache/openaiCacheCanonicalizer')
 
 // lastUsedAt 更新节流（每账户 60 秒内最多更新一次，使用 LRU 防止内存泄漏）
 const lastUsedAtThrottle = new LRUCache(1000) // 最多缓存 1000 个账户
@@ -781,7 +782,7 @@ class OpenAIResponsesRelayService {
 
     return attempts.map((attempt) => ({
       path: attempt.path || req.path,
-      body: attempt.body || req.body,
+      body: this._normalizeAttemptBody(attempt.path || req.path, attempt.body || req.body),
       transform: attempt.transform || 'passthrough',
       requestedModel: attempt.requestedModel || attempt.body?.model || req.body?.model || null,
       clientStream:
@@ -790,6 +791,14 @@ class OpenAIResponsesRelayService {
           : (attempt.body || req.body)?.stream === true,
       aggregateResponse: attempt.aggregateResponse === true
     }))
+  }
+
+  _normalizeAttemptBody(pathname, body) {
+    if (!body || typeof body !== 'object' || !this._isResponsesPath(pathname)) {
+      return body
+    }
+
+    return normalizeResponsesToolingRequest(body).body
   }
 
   _isResponsesPath(pathname = '') {

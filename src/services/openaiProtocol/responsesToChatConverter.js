@@ -1,3 +1,5 @@
+const { normalizeFunctionTool, normalizeToolChoice } = require('../cache/openaiCacheCanonicalizer')
+
 function mapMessageRole(role) {
   if (role === 'developer') {
     return 'system'
@@ -38,54 +40,32 @@ function extractTextContent(content) {
 }
 
 function convertTool(tool) {
-  if (!tool || tool.type !== 'function') {
+  const normalizedTool = normalizeFunctionTool(tool)
+  if (!normalizedTool) {
     return tool
   }
 
-  const functionDefinition =
-    tool.function && typeof tool.function === 'object' ? tool.function : tool
-
-  if (!functionDefinition.name) {
-    return tool
-  }
-
-  const convertedTool = {
-    type: 'function',
-    function: {
-      name: functionDefinition.name,
-      description: functionDefinition.description,
-      parameters: functionDefinition.parameters || functionDefinition.input_schema || {}
-    }
-  }
-
-  if (functionDefinition.strict !== undefined) {
-    convertedTool.function.strict = functionDefinition.strict
-  }
-
-  return convertedTool
+  return normalizedTool
 }
 
 function convertToolChoice(toolChoice) {
-  if (toolChoice === undefined || toolChoice === null) {
+  const normalizedChoice = normalizeToolChoice(toolChoice)
+  if (normalizedChoice === undefined) {
     return undefined
   }
 
-  if (typeof toolChoice === 'string') {
-    return toolChoice
+  if (typeof normalizedChoice === 'string') {
+    return normalizedChoice
   }
 
-  if (toolChoice.type === 'function') {
-    const toolName = toolChoice.name || toolChoice.function?.name
-    if (!toolName) {
-      return 'auto'
-    }
+  if (normalizedChoice.type === 'function' && normalizedChoice.name) {
     return {
       type: 'function',
-      function: { name: toolName }
+      function: { name: normalizedChoice.name }
     }
   }
 
-  return toolChoice
+  return normalizedChoice
 }
 
 function convertResponseFormat(textConfig) {

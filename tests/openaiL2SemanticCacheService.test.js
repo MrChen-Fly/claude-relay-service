@@ -276,6 +276,38 @@ describe('openaiL2SemanticCacheService', () => {
     })
   })
 
+  it('bypasses realtime search options with a specific request reason', () => {
+    const plan = openaiL2SemanticCacheService.buildCachePlan({
+      ...baseContext,
+      requestBody: {
+        ...baseContext.requestBody,
+        web_search_options: {
+          search_context_size: 'high'
+        }
+      }
+    })
+
+    expect(plan).toEqual({
+      cacheable: false,
+      reason: 'request_web_search_options'
+    })
+  })
+
+  it('bypasses non-function tools with a specific tool reason', () => {
+    const plan = openaiL2SemanticCacheService.buildCachePlan({
+      ...baseContext,
+      requestBody: {
+        ...baseContext.requestBody,
+        tools: [{ type: 'web_search_preview' }]
+      }
+    })
+
+    expect(plan).toEqual({
+      cacheable: false,
+      reason: 'tool_web_search_preview'
+    })
+  })
+
   it('records bypass reason metrics when semantic cache skips a request', async () => {
     const result = await openaiL2SemanticCacheService.beginRequest({
       ...baseContext,

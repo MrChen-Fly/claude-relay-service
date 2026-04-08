@@ -24,6 +24,10 @@ const OMITTED_REQUEST_FIELDS = new Set([
   'usage'
 ])
 const ALWAYS_DYNAMIC_REQUEST_FIELDS = ['background', 'web_search_options']
+const ALWAYS_DYNAMIC_REQUEST_REASON_MAP = {
+  background: 'request_background',
+  web_search_options: 'request_web_search_options'
+}
 
 function normalizeText(text) {
   if (typeof text !== 'string') {
@@ -240,25 +244,47 @@ function normalizeToolDefinitions(tools) {
     })
 }
 
+function toResponsesFunctionTool(tool) {
+  const normalizedTool = normalizeFunctionTool(tool)
+  if (!normalizedTool) {
+    return null
+  }
+
+  const functionDefinition = normalizedTool.function || {}
+  const responseTool = {
+    type: 'function',
+    name: functionDefinition.name
+  }
+
+  if (functionDefinition.description) {
+    responseTool.description = functionDefinition.description
+  }
+
+  if (functionDefinition.parameters) {
+    responseTool.parameters = functionDefinition.parameters
+  }
+
+  if (typeof functionDefinition.strict === 'boolean') {
+    responseTool.strict = functionDefinition.strict
+  }
+
+  return responseTool
+}
+
 function isCacheSafeFunctionTool(tool) {
   return Boolean(normalizeFunctionTool(tool))
 }
 
 function hasUnsafeToolDefinitions(requestBody = {}) {
-  const { tools } = requestBody
-  if (tools === undefined || tools === null) {
-    return false
-  }
-
-  if (!Array.isArray(tools)) {
-    return true
-  }
-
-  return tools.some((tool) => !isCacheSafeFunctionTool(tool))
+  return Boolean(getUnsupportedToolReason(requestBody))
 }
 
 function hasAlwaysDynamicFields(requestBody = {}) {
-  return ALWAYS_DYNAMIC_REQUEST_FIELDS.some((field) => {
+  return Boolean(getAlwaysDynamicRequestReason(requestBody))
+}
+
+function getAlwaysDynamicRequestReason(requestBody = {}) {
+  const activeField = ALWAYS_DYNAMIC_REQUEST_FIELDS.find((field) => {
     const value = requestBody[field]
     if (Array.isArray(value)) {
       return value.length > 0
@@ -266,6 +292,52 @@ function hasAlwaysDynamicFields(requestBody = {}) {
 
     return value !== undefined && value !== null && value !== false
   })
+
+  return activeField ? ALWAYS_DYNAMIC_REQUEST_REASON_MAP[activeField] || null : null
+}
+
+function classifyUnsupportedTool(tool) {
+  if (!tool || typeof tool !== 'object') {
+    return 'tool_invalid_payload'
+  }
+
+  const rawType = normalizeStringValue(tool.type)
+  const sourceFunction = tool.function && typeof tool.function === 'object' ? tool.function : tool
+  const toolName = normalizeStringValue(sourceFunction.name || tool.name)
+
+  if (rawType === 'function' || (!rawType && toolName)) {
+    return 'tool_invalid_function'
+  }
+
+  if (!rawType) {
+    return 'tool_invalid_payload'
+  }
+
+  const normalizedType = String(rawType)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+
+  return normalizedType ? `tool_${normalizedType}` : 'tool_invalid_payload'
+}
+
+function getUnsupportedToolReason(requestBody = {}) {
+  const { tools } = requestBody
+  if (tools === undefined || tools === null) {
+    return null
+  }
+
+  if (!Array.isArray(tools)) {
+    return 'tool_invalid_payload'
+  }
+
+  const firstUnsupportedTool = tools.find((tool) => !isCacheSafeFunctionTool(tool))
+  if (!firstUnsupportedTool) {
+    return null
+  }
+
+  return classifyUnsupportedTool(firstUnsupportedTool)
 }
 
 function normalizeToolChoice(choice, options = {}) {
@@ -338,6 +410,70 @@ function getToolChoiceMode(choice) {
   return normalizedChoice.type || 'custom'
 }
 
+function normalizeResponsesToolChoice(choice) {
+  const normalizedChoice = normalizeToolChoice(choice)
+  if (normalizedChoice === undefined) {
+    return undefined
+  }
+
+  if (typeof normalizedChoice === 'string') {
+    return normalizedChoice
+  }
+
+  if (normalizedChoice.type === 'function' && normalizedChoice.name) {
+    return {
+      type: 'function',
+      name: normalizedChoice.name
+    }
+  }
+
+  return normalizedChoice
+}
+
+function normalizeResponsesToolingRequest(requestBody = {}) {
+  if (!requestBody || typeof requestBody !== 'object') {
+    return {
+      changed: false,
+      body: requestBody
+    }
+  }
+
+  let nextBody = requestBody
+  let changed = false
+
+  if (Array.isArray(requestBody.tools)) {
+    const normalizedTools = requestBody.tools.map((tool) => toResponsesFunctionTool(tool) || tool)
+    const toolsChanged = JSON.stringify(normalizedTools) !== JSON.stringify(requestBody.tools || [])
+
+    if (toolsChanged) {
+      nextBody = {
+        ...nextBody,
+        tools: normalizedTools
+      }
+      changed = true
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(requestBody, 'tool_choice')) {
+    const normalizedToolChoice = normalizeResponsesToolChoice(requestBody.tool_choice)
+    const toolChoiceChanged =
+      JSON.stringify(normalizedToolChoice) !== JSON.stringify(requestBody.tool_choice)
+
+    if (toolChoiceChanged) {
+      nextBody = {
+        ...nextBody,
+        tool_choice: normalizedToolChoice
+      }
+      changed = true
+    }
+  }
+
+  return {
+    changed,
+    body: changed ? nextBody : requestBody
+  }
+}
+
 function normalizeTextFormat(format) {
   if (format === undefined || format === null) {
     return undefined
@@ -402,7 +538,9 @@ function buildToolProfile(requestBody = {}, options = {}) {
   if (!normalizedTools || normalizedTools.length !== tools.length) {
     return {
       supported: false,
-      reason: semanticSafeOnly ? 'dynamic_request' : 'dynamic_tools'
+      reason:
+        getUnsupportedToolReason(requestBody) ||
+        (semanticSafeOnly ? 'dynamic_request' : 'dynamic_tools')
     }
   }
 
@@ -574,11 +712,16 @@ module.exports = {
   normalizeText,
   normalizeCacheValue,
   normalizeFunctionTool,
+  toResponsesFunctionTool,
   normalizeToolDefinitions,
   normalizeToolChoice,
+  normalizeResponsesToolChoice,
+  normalizeResponsesToolingRequest,
   buildToolProfile,
   hasAlwaysDynamicFields,
+  getAlwaysDynamicRequestReason,
   hasUnsafeToolDefinitions,
+  getUnsupportedToolReason,
   isStructuredOutputRequest,
   mapMessageRole,
   isMessageInputItem,

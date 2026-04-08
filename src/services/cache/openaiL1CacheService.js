@@ -4,8 +4,8 @@ const redis = require('../../models/redis')
 const {
   buildCanonicalPrompt,
   normalizeCacheValue,
-  hasAlwaysDynamicFields: hasAlwaysDynamicFieldsForCache,
-  hasUnsafeToolDefinitions: hasUnsafeToolDefinitionsForCache
+  getAlwaysDynamicRequestReason,
+  getUnsupportedToolReason
 } = require('./openaiCacheCanonicalizer')
 
 const CACHE_VERSION = 'v1'
@@ -56,22 +56,6 @@ function pickReplayHeaders(headers = {}) {
     }
   }
   return normalized
-}
-
-function hasUnsafeToolDefinitions(requestBody = {}) {
-  return hasUnsafeToolDefinitionsForCache(requestBody)
-}
-
-function hasAlwaysDynamicFields(requestBody = {}) {
-  return hasAlwaysDynamicFieldsForCache(requestBody)
-}
-
-function hasDynamicFields(requestBody = {}) {
-  if (hasAlwaysDynamicFields(requestBody)) {
-    return true
-  }
-
-  return hasUnsafeToolDefinitions(requestBody)
 }
 
 function getNumericValue(value) {
@@ -167,8 +151,14 @@ function buildCachePlan(context = {}) {
     return { cacheable: false, reason: 'invalid_request_body' }
   }
 
-  if (hasDynamicFields(context.requestBody)) {
-    return { cacheable: false, reason: 'dynamic_tools' }
+  const dynamicRequestReason = getAlwaysDynamicRequestReason(context.requestBody)
+  if (dynamicRequestReason) {
+    return { cacheable: false, reason: dynamicRequestReason }
+  }
+
+  const dynamicToolReason = getUnsupportedToolReason(context.requestBody)
+  if (dynamicToolReason) {
+    return { cacheable: false, reason: dynamicToolReason }
   }
 
   const endpoint = context.endpoint || 'responses'

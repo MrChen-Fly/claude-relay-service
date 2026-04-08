@@ -289,4 +289,66 @@ describe('openaiProtocol bridge service', () => {
       { role: 'user', content: 'hello from simplified input' }
     ])
   })
+
+  it('normalizes implicit function tools for chat/completions fallback attempts', async () => {
+    openaiResponsesRelayService.handleRequest.mockResolvedValue('responses-implicit-tools')
+
+    const req = {
+      path: '/v1/responses',
+      body: {
+        model: 'gpt-5.4',
+        input: [{ role: 'user', content: 'hello' }],
+        stream: false,
+        tools: [
+          {
+            name: 'echo_note',
+            description: 'Echo a note string back to the caller when explicitly needed.',
+            parameters: {
+              type: 'object',
+              properties: {
+                note: { type: 'string' }
+              },
+              required: ['note']
+            },
+            strict: true
+          }
+        ],
+        tool_choice: {
+          name: 'echo_note'
+        }
+      }
+    }
+
+    await bridgeService.handleResponsesClientRequest(
+      req,
+      {},
+      { id: 'responses-6', name: 'Implicit Tool Account' },
+      { id: 'api-key-6' },
+      'gpt-5.4',
+      { providerEndpoint: 'completions' }
+    )
+
+    const chatBody = openaiResponsesRelayService.handleRequest.mock.calls[0][4].attempts[0].body
+    expect(chatBody.tools).toEqual([
+      {
+        type: 'function',
+        function: {
+          name: 'echo_note',
+          description: 'Echo a note string back to the caller when explicitly needed.',
+          parameters: {
+            type: 'object',
+            properties: {
+              note: { type: 'string' }
+            },
+            required: ['note']
+          },
+          strict: true
+        }
+      }
+    ])
+    expect(chatBody.tool_choice).toEqual({
+      type: 'function',
+      function: { name: 'echo_note' }
+    })
+  })
 })

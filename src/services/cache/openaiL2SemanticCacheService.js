@@ -10,7 +10,7 @@ const {
   normalizeText,
   buildCanonicalPrompt,
   buildToolProfile,
-  hasAlwaysDynamicFields,
+  getAlwaysDynamicRequestReason,
   isStructuredOutputRequest
 } = require('./openaiCacheCanonicalizer')
 
@@ -303,8 +303,9 @@ function buildCachePlan(context = {}) {
     return { cacheable: false, reason: 'invalid_request_body' }
   }
 
-  if (hasAlwaysDynamicFields(context.requestBody)) {
-    return { cacheable: false, reason: 'dynamic_request' }
+  const dynamicRequestReason = getAlwaysDynamicRequestReason(context.requestBody)
+  if (dynamicRequestReason) {
+    return { cacheable: false, reason: dynamicRequestReason }
   }
 
   if (!toolProfile.supported) {
