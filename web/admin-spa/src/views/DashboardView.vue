@@ -461,167 +461,279 @@
     <!-- OpenAI 缓存观测 -->
     <div class="mb-4 sm:mb-6 md:mb-8">
       <div class="card p-4 sm:p-6">
-        <div class="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <div>
-            <h3 class="text-lg font-bold text-gray-900 dark:text-gray-100 sm:text-xl">
-              OpenAI 缓存观测
-            </h3>
-            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
-              L2 默认开启，当前模式: {{ l2ModeLabel }}
-            </p>
-          </div>
-          <div class="flex flex-wrap items-center gap-2 text-xs">
-            <span
-              class="rounded-full border border-blue-200 bg-blue-50 px-3 py-1 font-medium text-blue-700 dark:border-blue-900/60 dark:bg-blue-900/20 dark:text-blue-300"
-            >
-              L1 {{ l1CacheMetrics.enabled ? '开启' : '关闭' }}
-            </span>
-            <span
-              class="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 font-medium text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-900/20 dark:text-emerald-300"
-            >
-              L2 {{ l2CacheMetrics.enabled ? '开启' : '关闭' }}
-            </span>
-            <span
-              class="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 font-medium text-amber-700 dark:border-amber-900/60 dark:bg-amber-900/20 dark:text-amber-300"
-            >
-              阈值 {{ formatSimilarityThreshold(l2CacheMetrics.similarityThreshold) }}
-            </span>
-          </div>
-        </div>
-
-        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          <div
-            class="rounded-2xl border border-sky-100 bg-gradient-to-br from-sky-50 to-white p-4 dark:border-sky-900/40 dark:from-sky-950/20 dark:to-gray-900"
-          >
-            <p class="text-xs font-semibold text-gray-600 dark:text-gray-400">L1 精确命中率</p>
-            <p class="mt-2 text-2xl font-bold text-sky-600">
-              {{ formatRatioPercent(l1CacheMetrics.rates.hitRate) }}
-            </p>
-            <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
-              命中 {{ formatNumber(l1CacheMetrics.counters.cache_hit_exact) }} | Miss
-              {{ formatNumber(l1CacheMetrics.counters.cache_miss) }}
-            </p>
-            <p class="mt-1 text-xs text-gray-400 dark:text-gray-500">
-              Bypass {{ formatNumber(l1CacheMetrics.counters.cache_bypass) }} | 写入
-              {{ formatNumber(l1CacheMetrics.counters.cache_write) }}
-            </p>
-          </div>
-
-          <div
-            class="rounded-2xl border border-emerald-100 bg-gradient-to-br from-emerald-50 to-white p-4 dark:border-emerald-900/40 dark:from-emerald-950/20 dark:to-gray-900"
-          >
-            <p class="text-xs font-semibold text-gray-600 dark:text-gray-400">
-              {{ l2PrimaryMetricLabel }}
-            </p>
-            <p class="mt-2 text-2xl font-bold text-emerald-600">
-              {{ formatRatioPercent(l2PrimaryMetricRate) }}
-            </p>
-            <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
-              语义命中 {{ formatNumber(l2CacheMetrics.counters.cache_hit_semantic) }} | Shadow
-              {{ formatNumber(l2CacheMetrics.counters.cache_shadow_hit) }}
-            </p>
-            <p class="mt-1 text-xs text-gray-400 dark:text-gray-500">
-              Miss {{ formatNumber(l2CacheMetrics.counters.cache_miss) }} | Lookups
-              {{ formatNumber(l2CacheMetrics.totals.lookups) }}
-            </p>
-          </div>
-
-          <div
-            class="rounded-2xl border border-violet-100 bg-gradient-to-br from-violet-50 to-white p-4 dark:border-violet-900/40 dark:from-violet-950/20 dark:to-gray-900"
-          >
-            <p class="text-xs font-semibold text-gray-600 dark:text-gray-400">
-              Embedding 缓存命中率
-            </p>
-            <p class="mt-2 text-2xl font-bold text-violet-600">
-              {{ formatRatioPercent(l2CacheMetrics.rates.embeddingHitRate) }}
-            </p>
-            <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
-              命中 {{ formatNumber(l2CacheMetrics.counters.embedding_hit) }} | Miss
-              {{ formatNumber(l2CacheMetrics.counters.embedding_miss) }}
-            </p>
-            <p class="mt-1 text-xs text-gray-400 dark:text-gray-500">
-              请求 {{ formatNumber(l2CacheMetrics.totals.embeddingRequests) }}
-            </p>
-          </div>
-
-          <div
-            class="rounded-2xl border border-amber-100 bg-gradient-to-br from-amber-50 to-white p-4 dark:border-amber-900/40 dark:from-amber-950/20 dark:to-gray-900"
-          >
-            <p class="text-xs font-semibold text-gray-600 dark:text-gray-400">L2 工作模式</p>
-            <p class="mt-2 text-2xl font-bold text-amber-600">
-              {{ l2ModeLabel }}
-            </p>
-            <p class="mt-2 truncate text-xs text-gray-500 dark:text-gray-400">
-              {{ l2CacheMetrics.embeddingModel }}
-            </p>
-            <p class="mt-1 text-xs text-gray-400 dark:text-gray-500">
-              写入 {{ formatNumber(l2CacheMetrics.counters.cache_write) }} | Bypass
-              {{ formatNumber(l2CacheMetrics.counters.cache_bypass) }}
-            </p>
-          </div>
-        </div>
-
-        <div class="mt-4 grid grid-cols-1 gap-3 xl:grid-cols-2">
-          <div
-            class="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-slate-800 dark:bg-slate-900/40"
-          >
-            <div class="flex items-center justify-between gap-3">
-              <p class="text-sm font-semibold text-gray-800 dark:text-gray-100">L1 Bypass 原因</p>
-              <span class="text-xs text-gray-500 dark:text-gray-400">
-                总计 {{ formatNumber(l1CacheMetrics.counters.cache_bypass) }}
+        <div class="flex flex-col gap-4">
+          <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <h3 class="text-lg font-bold text-gray-900 dark:text-gray-100 sm:text-xl">
+                OpenAI 缓存观测
+              </h3>
+              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                {{ cacheOverview.summary }}
+              </p>
+            </div>
+            <div class="flex flex-wrap items-center gap-2 text-xs">
+              <span
+                class="rounded-full border border-blue-200 bg-blue-50 px-3 py-1 font-medium text-blue-700 dark:border-blue-900/60 dark:bg-blue-900/20 dark:text-blue-300"
+              >
+                L1 {{ l1CacheMetrics.enabled ? '开启' : '关闭' }}
+              </span>
+              <span
+                class="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 font-medium text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-900/20 dark:text-emerald-300"
+              >
+                L2 {{ l2CacheMetrics.enabled ? '开启' : '关闭' }}
+              </span>
+              <span
+                class="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 font-medium text-amber-700 dark:border-amber-900/60 dark:bg-amber-900/20 dark:text-amber-300"
+              >
+                {{ l2ModeLabel }}
+              </span>
+              <span
+                class="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 font-medium text-slate-700 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-200"
+              >
+                阈值 {{ formatSimilarityThreshold(l2CacheMetrics.similarityThreshold) }}
               </span>
             </div>
-            <div v-if="l1BypassReasons.length > 0" class="mt-3 space-y-2">
-              <div
-                v-for="item in l1BypassReasons"
-                :key="`l1-${item.reason}`"
-                class="flex items-center justify-between rounded-xl bg-white px-3 py-2 text-sm shadow-sm dark:bg-slate-950/60"
-              >
-                <div class="min-w-0">
-                  <p class="truncate font-medium text-gray-800 dark:text-gray-100">
-                    {{ formatCacheBypassReason(item.reason) }}
-                  </p>
-                  <p class="mt-0.5 truncate text-xs text-gray-400 dark:text-gray-500">
-                    {{ item.reason }}
-                  </p>
-                </div>
-                <span class="ml-3 text-sm font-semibold text-sky-600 dark:text-sky-300">
-                  {{ formatNumber(item.count) }}
-                </span>
-              </div>
-            </div>
-            <p v-else class="mt-3 text-sm text-gray-500 dark:text-gray-400">暂无 bypass 数据</p>
           </div>
 
           <div
             class="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-slate-800 dark:bg-slate-900/40"
           >
-            <div class="flex items-center justify-between gap-3">
-              <p class="text-sm font-semibold text-gray-800 dark:text-gray-100">L2 Bypass 原因</p>
-              <span class="text-xs text-gray-500 dark:text-gray-400">
-                总计 {{ formatNumber(l2CacheMetrics.counters.cache_bypass) }}
-              </span>
-            </div>
-            <div v-if="l2BypassReasons.length > 0" class="mt-3 space-y-2">
-              <div
-                v-for="item in l2BypassReasons"
-                :key="`l2-${item.reason}`"
-                class="flex items-center justify-between rounded-xl bg-white px-3 py-2 text-sm shadow-sm dark:bg-slate-950/60"
-              >
-                <div class="min-w-0">
-                  <p class="truncate font-medium text-gray-800 dark:text-gray-100">
-                    {{ formatCacheBypassReason(item.reason) }}
-                  </p>
-                  <p class="mt-0.5 truncate text-xs text-gray-400 dark:text-gray-500">
-                    {{ item.reason }}
-                  </p>
-                </div>
-                <span class="ml-3 text-sm font-semibold text-emerald-600 dark:text-emerald-300">
-                  {{ formatNumber(item.count) }}
-                </span>
+            <div class="grid grid-cols-1 gap-3 md:grid-cols-3">
+              <div class="rounded-xl bg-white/80 px-4 py-3 shadow-sm dark:bg-slate-950/60">
+                <p class="text-xs font-medium text-gray-500 dark:text-gray-400">当前阶段</p>
+                <p class="mt-1 text-sm font-semibold text-gray-900 dark:text-gray-100">
+                  {{ cacheOverview.stage }}
+                </p>
+              </div>
+              <div class="rounded-xl bg-white/80 px-4 py-3 shadow-sm dark:bg-slate-950/60">
+                <p class="text-xs font-medium text-gray-500 dark:text-gray-400">下一步关注</p>
+                <p class="mt-1 text-sm font-semibold text-gray-900 dark:text-gray-100">
+                  {{ cacheOverview.focus }}
+                </p>
+              </div>
+              <div class="rounded-xl bg-white/80 px-4 py-3 shadow-sm dark:bg-slate-950/60">
+                <p class="text-xs font-medium text-gray-500 dark:text-gray-400">主要阻塞</p>
+                <p class="mt-1 text-sm font-semibold text-gray-900 dark:text-gray-100">
+                  {{ cacheOverview.blocker }}
+                </p>
               </div>
             </div>
-            <p v-else class="mt-3 text-sm text-gray-500 dark:text-gray-400">暂无 bypass 数据</p>
+          </div>
+
+          <div class="grid grid-cols-1 gap-4 xl:grid-cols-2">
+            <div
+              class="rounded-3xl border border-sky-100 bg-gradient-to-br from-sky-50 via-white to-white p-5 dark:border-sky-900/40 dark:from-sky-950/20 dark:via-gray-900 dark:to-gray-900"
+            >
+              <div class="flex flex-col gap-4">
+                <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                  <div>
+                    <div class="flex flex-wrap items-center gap-2">
+                      <p class="text-sm font-semibold text-sky-700 dark:text-sky-300">
+                        L1 精确缓存
+                      </p>
+                      <span :class="l1CacheSummary.badgeClass">{{ l1CacheSummary.state }}</span>
+                    </div>
+                    <p class="mt-3 text-base font-semibold text-gray-900 dark:text-gray-100">
+                      {{ l1CacheSummary.summary }}
+                    </p>
+                    <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                      {{ l1CacheSummary.detail }}
+                    </p>
+                  </div>
+                  <div class="text-left lg:text-right">
+                    <p class="text-xs font-medium text-gray-500 dark:text-gray-400">命中率</p>
+                    <p class="mt-1 text-3xl font-bold text-sky-600 dark:text-sky-300">
+                      {{ formatRatioPercent(l1CacheMetrics.rates.hitRate) }}
+                    </p>
+                  </div>
+                </div>
+
+                <div class="grid grid-cols-2 gap-3">
+                  <div class="rounded-2xl bg-white/80 px-4 py-3 shadow-sm dark:bg-slate-950/60">
+                    <p class="text-xs text-gray-500 dark:text-gray-400">命中</p>
+                    <p class="mt-1 text-lg font-semibold text-gray-900 dark:text-gray-100">
+                      {{ formatNumber(l1CacheMetrics.counters.cache_hit_exact) }}
+                    </p>
+                  </div>
+                  <div class="rounded-2xl bg-white/80 px-4 py-3 shadow-sm dark:bg-slate-950/60">
+                    <p class="text-xs text-gray-500 dark:text-gray-400">查找</p>
+                    <p class="mt-1 text-lg font-semibold text-gray-900 dark:text-gray-100">
+                      {{ formatNumber(l1CacheMetrics.totals.lookups) }}
+                    </p>
+                  </div>
+                  <div class="rounded-2xl bg-white/80 px-4 py-3 shadow-sm dark:bg-slate-950/60">
+                    <p class="text-xs text-gray-500 dark:text-gray-400">写入</p>
+                    <p class="mt-1 text-lg font-semibold text-gray-900 dark:text-gray-100">
+                      {{ formatNumber(l1CacheMetrics.counters.cache_write) }}
+                    </p>
+                  </div>
+                  <div class="rounded-2xl bg-white/80 px-4 py-3 shadow-sm dark:bg-slate-950/60">
+                    <p class="text-xs text-gray-500 dark:text-gray-400">Bypass</p>
+                    <p class="mt-1 text-lg font-semibold text-gray-900 dark:text-gray-100">
+                      {{ formatNumber(l1CacheMetrics.counters.cache_bypass) }}
+                    </p>
+                  </div>
+                </div>
+
+                <p class="text-xs text-gray-500 dark:text-gray-400">
+                  Miss {{ formatNumber(l1CacheMetrics.counters.cache_miss) }} · 请求
+                  {{ formatNumber(l1CacheMetrics.totals.requests) }}
+                </p>
+              </div>
+            </div>
+
+            <div
+              class="rounded-3xl border border-emerald-100 bg-gradient-to-br from-emerald-50 via-white to-white p-5 dark:border-emerald-900/40 dark:from-emerald-950/20 dark:via-gray-900 dark:to-gray-900"
+            >
+              <div class="flex flex-col gap-4">
+                <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                  <div>
+                    <div class="flex flex-wrap items-center gap-2">
+                      <p class="text-sm font-semibold text-emerald-700 dark:text-emerald-300">
+                        L2 语义缓存
+                      </p>
+                      <span :class="l2CacheSummary.badgeClass">{{ l2CacheSummary.state }}</span>
+                      <span
+                        class="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-900/20 dark:text-emerald-300"
+                      >
+                        {{ l2ModeLabel }}
+                      </span>
+                    </div>
+                    <p class="mt-3 text-base font-semibold text-gray-900 dark:text-gray-100">
+                      {{ l2CacheSummary.summary }}
+                    </p>
+                    <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                      {{ l2CacheSummary.detail }}
+                    </p>
+                  </div>
+                  <div class="text-left lg:text-right">
+                    <p class="text-xs font-medium text-gray-500 dark:text-gray-400">
+                      {{ l2PrimaryMetricLabel }}
+                    </p>
+                    <p class="mt-1 text-3xl font-bold text-emerald-600 dark:text-emerald-300">
+                      {{ formatRatioPercent(l2PrimaryMetricRate) }}
+                    </p>
+                  </div>
+                </div>
+
+                <div class="grid grid-cols-2 gap-3">
+                  <div class="rounded-2xl bg-white/80 px-4 py-3 shadow-sm dark:bg-slate-950/60">
+                    <p class="text-xs text-gray-500 dark:text-gray-400">
+                      {{ l2PrimaryMetricCountLabel }}
+                    </p>
+                    <p class="mt-1 text-lg font-semibold text-gray-900 dark:text-gray-100">
+                      {{ formatNumber(l2PrimaryMetricCount) }}
+                    </p>
+                  </div>
+                  <div class="rounded-2xl bg-white/80 px-4 py-3 shadow-sm dark:bg-slate-950/60">
+                    <p class="text-xs text-gray-500 dark:text-gray-400">Lookups</p>
+                    <p class="mt-1 text-lg font-semibold text-gray-900 dark:text-gray-100">
+                      {{ formatNumber(l2CacheMetrics.totals.lookups) }}
+                    </p>
+                  </div>
+                  <div class="rounded-2xl bg-white/80 px-4 py-3 shadow-sm dark:bg-slate-950/60">
+                    <p class="text-xs text-gray-500 dark:text-gray-400">Embedding 请求</p>
+                    <p class="mt-1 text-lg font-semibold text-gray-900 dark:text-gray-100">
+                      {{ formatNumber(l2CacheMetrics.totals.embeddingRequests) }}
+                    </p>
+                  </div>
+                  <div class="rounded-2xl bg-white/80 px-4 py-3 shadow-sm dark:bg-slate-950/60">
+                    <p class="text-xs text-gray-500 dark:text-gray-400">Bypass</p>
+                    <p class="mt-1 text-lg font-semibold text-gray-900 dark:text-gray-100">
+                      {{ formatNumber(l2CacheMetrics.counters.cache_bypass) }}
+                    </p>
+                  </div>
+                </div>
+
+                <p class="text-xs text-gray-500 dark:text-gray-400">
+                  Embedding {{ l2CacheMetrics.embeddingModel }} · 命中率
+                  {{ formatRatioPercent(l2CacheMetrics.rates.embeddingHitRate) }} · 写入
+                  {{ formatNumber(l2CacheMetrics.counters.cache_write) }}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 gap-3 xl:grid-cols-2">
+            <div
+              class="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-slate-800 dark:bg-slate-900/40"
+            >
+              <div class="flex items-center justify-between gap-3">
+                <div>
+                  <p class="text-sm font-semibold text-gray-800 dark:text-gray-100">
+                    L1 主要绕过原因
+                  </p>
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    先看第一项，通常就是 L1 没起量的主要原因。
+                  </p>
+                </div>
+                <span class="text-xs text-gray-500 dark:text-gray-400">
+                  总计 {{ formatNumber(l1CacheMetrics.counters.cache_bypass) }}
+                </span>
+              </div>
+              <div v-if="l1BypassReasons.length > 0" class="mt-3 space-y-2">
+                <div
+                  v-for="item in l1BypassReasons"
+                  :key="`l1-${item.reason}`"
+                  class="flex items-center justify-between rounded-xl bg-white px-3 py-2 text-sm shadow-sm dark:bg-slate-950/60"
+                >
+                  <div class="min-w-0">
+                    <p class="truncate font-medium text-gray-800 dark:text-gray-100">
+                      {{ formatCacheBypassReason(item.reason) }}
+                    </p>
+                    <p class="mt-0.5 truncate text-xs text-gray-400 dark:text-gray-500">
+                      {{ item.reason }}
+                    </p>
+                  </div>
+                  <span class="ml-3 text-sm font-semibold text-sky-600 dark:text-sky-300">
+                    {{ formatNumber(item.count) }}
+                  </span>
+                </div>
+              </div>
+              <p v-else class="mt-3 text-sm text-gray-500 dark:text-gray-400">
+                暂时没有明显的 L1 绕过原因。
+              </p>
+            </div>
+
+            <div
+              class="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-slate-800 dark:bg-slate-900/40"
+            >
+              <div class="flex items-center justify-between gap-3">
+                <div>
+                  <p class="text-sm font-semibold text-gray-800 dark:text-gray-100">
+                    L2 主要绕过原因
+                  </p>
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    如果 L2 一直没开始检索，优先先看这里。
+                  </p>
+                </div>
+                <span class="text-xs text-gray-500 dark:text-gray-400">
+                  总计 {{ formatNumber(l2CacheMetrics.counters.cache_bypass) }}
+                </span>
+              </div>
+              <div v-if="l2BypassReasons.length > 0" class="mt-3 space-y-2">
+                <div
+                  v-for="item in l2BypassReasons"
+                  :key="`l2-${item.reason}`"
+                  class="flex items-center justify-between rounded-xl bg-white px-3 py-2 text-sm shadow-sm dark:bg-slate-950/60"
+                >
+                  <div class="min-w-0">
+                    <p class="truncate font-medium text-gray-800 dark:text-gray-100">
+                      {{ formatCacheBypassReason(item.reason) }}
+                    </p>
+                    <p class="mt-0.5 truncate text-xs text-gray-400 dark:text-gray-500">
+                      {{ item.reason }}
+                    </p>
+                  </div>
+                  <span class="ml-3 text-sm font-semibold text-emerald-600 dark:text-emerald-300">
+                    {{ formatNumber(item.count) }}
+                  </span>
+                </div>
+              </div>
+              <p v-else class="mt-3 text-sm text-gray-500 dark:text-gray-400">
+                暂时没有明显的 L2 绕过原因。
+              </p>
+            </div>
           </div>
         </div>
       </div>
@@ -1121,6 +1233,33 @@ const formatSimilarityThreshold = (value) => {
   return Number.isFinite(numericValue) ? numericValue.toFixed(2) : '--'
 }
 
+const toSafeNumber = (value) => {
+  const numericValue = Number(value)
+  return Number.isFinite(numericValue) ? numericValue : 0
+}
+
+const getTopBypassReason = (reasons) => {
+  if (!Array.isArray(reasons) || reasons.length === 0) {
+    return null
+  }
+
+  return reasons[0]
+}
+
+const buildCacheBadgeClass = (tone) => {
+  const toneMap = {
+    slate:
+      'rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-200',
+    sky: 'rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-xs font-semibold text-sky-700 dark:border-sky-900/60 dark:bg-sky-900/20 dark:text-sky-300',
+    emerald:
+      'rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-900/20 dark:text-emerald-300',
+    amber:
+      'rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700 dark:border-amber-900/60 dark:bg-amber-900/20 dark:text-amber-300'
+  }
+
+  return toneMap[tone] || toneMap.slate
+}
+
 const cacheBypassReasonLabels = {
   cache_disabled: '缓存未启用',
   missing_tenant: '缺少租户标识',
@@ -1199,15 +1338,23 @@ const chartColors = computed(() => ({
 
 const l1CacheMetrics = computed(() => dashboardData.value.cacheMetrics?.l1 || emptyCacheMetrics.l1)
 const l2CacheMetrics = computed(() => dashboardData.value.cacheMetrics?.l2 || emptyCacheMetrics.l2)
-const l1BypassReasons = computed(() => (l1CacheMetrics.value.bypassReasons || []).slice(0, 4))
-const l2BypassReasons = computed(() => (l2CacheMetrics.value.bypassReasons || []).slice(0, 4))
+const l1BypassReasons = computed(() => (l1CacheMetrics.value.bypassReasons || []).slice(0, 3))
+const l2BypassReasons = computed(() => (l2CacheMetrics.value.bypassReasons || []).slice(0, 3))
 const l2PrimaryMetricLabel = computed(() =>
-  l2CacheMetrics.value.shadowMode ? 'L2 Shadow 召回率' : 'L2 语义命中率'
+  l2CacheMetrics.value.shadowMode ? 'Shadow 召回率' : '语义命中率'
+)
+const l2PrimaryMetricCountLabel = computed(() =>
+  l2CacheMetrics.value.shadowMode ? 'Shadow 召回' : '语义命中'
 )
 const l2PrimaryMetricRate = computed(() =>
   l2CacheMetrics.value.shadowMode
     ? l2CacheMetrics.value.rates.shadowHitRate
     : l2CacheMetrics.value.rates.semanticHitRate
+)
+const l2PrimaryMetricCount = computed(() =>
+  l2CacheMetrics.value.shadowMode
+    ? l2CacheMetrics.value.counters.cache_shadow_hit
+    : l2CacheMetrics.value.counters.cache_hit_semantic
 )
 const l2ModeLabel = computed(() => {
   if (!l2CacheMetrics.value.enabled) {
@@ -1215,6 +1362,229 @@ const l2ModeLabel = computed(() => {
   }
 
   return l2CacheMetrics.value.shadowMode ? 'Shadow 观测' : '命中返回'
+})
+
+const l1CacheSummary = computed(() => {
+  const metrics = l1CacheMetrics.value
+  const hits = toSafeNumber(metrics.counters.cache_hit_exact)
+  const misses = toSafeNumber(metrics.counters.cache_miss)
+  const bypass = toSafeNumber(metrics.counters.cache_bypass)
+  const writes = toSafeNumber(metrics.counters.cache_write)
+  const lookups = toSafeNumber(metrics.totals.lookups)
+  const topReason = getTopBypassReason(metrics.bypassReasons)
+
+  if (!metrics.enabled) {
+    return {
+      state: '已关闭',
+      summary: 'L1 当前未参与精确缓存。',
+      detail: '如果要观察 L1，先确认服务端是否开启了精确缓存。',
+      badgeClass: buildCacheBadgeClass('slate')
+    }
+  }
+
+  if (hits > 0) {
+    return {
+      state: '已有命中',
+      summary: 'L1 已经开始直接返回重复请求。',
+      detail: `已命中 ${formatNumber(hits)} 次，命中率 ${formatRatioPercent(metrics.rates.hitRate)}，继续看写入是否稳定增长。`,
+      badgeClass: buildCacheBadgeClass('sky')
+    }
+  }
+
+  if (lookups > 0 || misses > 0 || writes > 0) {
+    return {
+      state: '已开始查缓存',
+      summary: 'L1 已经进入查找和写入阶段。',
+      detail: `当前查找 ${formatNumber(lookups)} 次、写入 ${formatNumber(writes)} 次，下一步应该观察是否出现首个精确命中。`,
+      badgeClass: buildCacheBadgeClass('emerald')
+    }
+  }
+
+  if (bypass > 0) {
+    return {
+      state: '大多绕过',
+      summary: '当前请求主要绕过了 L1。',
+      detail: topReason
+        ? `最主要原因是 ${formatCacheBypassReason(topReason.reason)}，已出现 ${formatNumber(topReason.count)} 次。`
+        : '缓存还没真正参与查找，优先先看 bypass 原因。',
+      badgeClass: buildCacheBadgeClass('amber')
+    }
+  }
+
+  return {
+    state: '等待样本',
+    summary: '还没有足够的数据判断 L1 状态。',
+    detail: '先观察请求是否开始进入查找、写入或 bypass。',
+    badgeClass: buildCacheBadgeClass('slate')
+  }
+})
+
+const l2CacheSummary = computed(() => {
+  const metrics = l2CacheMetrics.value
+  const semanticHits = toSafeNumber(metrics.counters.cache_hit_semantic)
+  const shadowHits = toSafeNumber(metrics.counters.cache_shadow_hit)
+  const bypass = toSafeNumber(metrics.counters.cache_bypass)
+  const writes = toSafeNumber(metrics.counters.cache_write)
+  const lookups = toSafeNumber(metrics.totals.lookups)
+  const embeddingRequests = toSafeNumber(metrics.totals.embeddingRequests)
+  const topReason = getTopBypassReason(metrics.bypassReasons)
+
+  if (!metrics.enabled) {
+    return {
+      state: '已关闭',
+      summary: 'L2 当前未参与语义缓存。',
+      detail: '如果要观察 L2，先确认语义缓存开关和 embedding 配置。',
+      badgeClass: buildCacheBadgeClass('slate')
+    }
+  }
+
+  if (!metrics.shadowMode && semanticHits > 0) {
+    return {
+      state: '已命中返回',
+      summary: 'L2 已经开始直接返回语义相似结果。',
+      detail: `已命中 ${formatNumber(semanticHits)} 次，当前可以继续关注命中率和写入是否一起增长。`,
+      badgeClass: buildCacheBadgeClass('emerald')
+    }
+  }
+
+  if (metrics.shadowMode && shadowHits > 0) {
+    return {
+      state: 'Shadow 有召回',
+      summary: 'L2 正在 Shadow 观测，而且已经出现可复用的相似请求。',
+      detail: `已召回 ${formatNumber(shadowHits)} 次，但当前仍只观测不直接返回缓存。`,
+      badgeClass: buildCacheBadgeClass('emerald')
+    }
+  }
+
+  if (lookups > 0 || embeddingRequests > 0 || writes > 0) {
+    return {
+      state: metrics.shadowMode ? '观测中' : '已开始检索',
+      summary: metrics.shadowMode
+        ? 'L2 已开始做 embedding 检索，目前仍处于 Shadow 观测。'
+        : 'L2 已开始做语义检索，但暂时还没有出现命中返回。',
+      detail: `Lookups ${formatNumber(lookups)} 次，Embedding 请求 ${formatNumber(embeddingRequests)} 次，阈值 ${formatSimilarityThreshold(metrics.similarityThreshold)}。`,
+      badgeClass: buildCacheBadgeClass('sky')
+    }
+  }
+
+  if (bypass > 0) {
+    return {
+      state: '大多绕过',
+      summary: '当前请求主要绕过了 L2。',
+      detail: topReason
+        ? `最主要原因是 ${formatCacheBypassReason(topReason.reason)}，已出现 ${formatNumber(topReason.count)} 次。`
+        : 'embedding 还没真正参与检索，优先先看 bypass 原因。',
+      badgeClass: buildCacheBadgeClass('amber')
+    }
+  }
+
+  return {
+    state: metrics.shadowMode ? '等待 Shadow 样本' : '等待样本',
+    summary: '还没有足够的数据判断 L2 状态。',
+    detail: `当前模式为 ${metrics.shadowMode ? 'Shadow 观测' : '命中返回'}，Embedding 模型 ${metrics.embeddingModel || '--'}。`,
+    badgeClass: buildCacheBadgeClass('slate')
+  }
+})
+
+const primaryBypassReason = computed(() => {
+  const reasonMap = new Map()
+
+  ;[...l1BypassReasons.value, ...l2BypassReasons.value].forEach((item) => {
+    if (!item?.reason) {
+      return
+    }
+
+    const count = toSafeNumber(item.count)
+    reasonMap.set(item.reason, (reasonMap.get(item.reason) || 0) + count)
+  })
+
+  let topReason = null
+  reasonMap.forEach((count, reason) => {
+    if (!topReason || count > topReason.count) {
+      topReason = { reason, count }
+    }
+  })
+
+  return topReason
+})
+
+const cacheOverview = computed(() => {
+  const l1Metrics = l1CacheMetrics.value
+  const l2Metrics = l2CacheMetrics.value
+  const l1Hits = toSafeNumber(l1Metrics.counters.cache_hit_exact)
+  const l1Lookups = toSafeNumber(l1Metrics.totals.lookups)
+  const l1Writes = toSafeNumber(l1Metrics.counters.cache_write)
+  const l2Hits = toSafeNumber(l2Metrics.counters.cache_hit_semantic)
+  const l2ShadowHits = toSafeNumber(l2Metrics.counters.cache_shadow_hit)
+  const l2Lookups = toSafeNumber(l2Metrics.totals.lookups)
+  const embeddingRequests = toSafeNumber(l2Metrics.totals.embeddingRequests)
+  const topReason = primaryBypassReason.value
+  const blocker = topReason
+    ? `${formatCacheBypassReason(topReason.reason)} · ${formatNumber(topReason.count)}`
+    : '暂无明显阻塞'
+
+  if (!l1Metrics.enabled && !l2Metrics.enabled) {
+    return {
+      summary: 'L1 和 L2 都已关闭，当前不会产生缓存收益。',
+      stage: '缓存关闭',
+      focus: '先确认开关配置',
+      blocker: '功能未启用'
+    }
+  }
+
+  if (l1Hits > 0 || l2Hits > 0) {
+    return {
+      summary: '缓存已经开始产生实际命中收益，可以优先观察命中率和写入是否持续增长。',
+      stage: '开始命中',
+      focus: '继续看命中率和写入',
+      blocker
+    }
+  }
+
+  if (l2ShadowHits > 0) {
+    return {
+      summary: 'L2 已经在 Shadow 模式下召回到相似请求，离真实命中只差一步。',
+      stage: 'Shadow 召回',
+      focus: '评估是否切到命中返回',
+      blocker
+    }
+  }
+
+  if (l2Lookups > 0 || embeddingRequests > 0) {
+    return {
+      summary: l2Metrics.shadowMode
+        ? 'L2 已开始做相似度观测，但当前还只是在验证召回效果。'
+        : 'L2 已开始做语义检索，正在等待首个稳定命中。',
+      stage: l2Metrics.shadowMode ? 'Shadow 观测' : '语义检索',
+      focus: l2Metrics.shadowMode ? '看是否出现 Shadow 召回' : '看是否出现语义命中',
+      blocker
+    }
+  }
+
+  if (l1Lookups > 0 || l1Writes > 0) {
+    return {
+      summary: 'L1 已进入查找和写入阶段，下一步应该开始出现重复请求命中。',
+      stage: '精确缓存预热',
+      focus: '看 L1 是否开始命中',
+      blocker
+    }
+  }
+
+  if (topReason) {
+    return {
+      summary: `当前缓存主要卡在 bypass，${formatCacheBypassReason(topReason.reason)} 是最明显的阻塞。`,
+      stage: '绕过偏多',
+      focus: '先降低 bypass',
+      blocker
+    }
+  }
+
+  return {
+    summary: '目前还没有足够的数据判断缓存是否开始生效。',
+    stage: '等待样本',
+    focus: '先看查找和写入',
+    blocker
+  }
 })
 
 function formatCostValue(cost) {
