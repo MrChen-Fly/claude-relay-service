@@ -581,6 +581,7 @@
                 </div>
 
                 <p class="text-xs text-gray-500 dark:text-gray-400">
+                  可参与率 {{ formatRatioPercent(l1CacheMetrics.summary?.participationRate) }} ·
                   Miss {{ formatNumber(l1CacheMetrics.counters.cache_miss) }} · 请求
                   {{ formatNumber(l1CacheMetrics.totals.requests) }}
                 </p>
@@ -651,8 +652,8 @@
                 </div>
 
                 <p class="text-xs text-gray-500 dark:text-gray-400">
-                  Embedding {{ l2CacheMetrics.embeddingModel }} · 命中率
-                  {{ formatRatioPercent(l2CacheMetrics.rates.embeddingHitRate) }} · 写入
+                  可参与率 {{ formatRatioPercent(l2CacheMetrics.summary?.participationRate) }} ·
+                  Embedding {{ l2CacheMetrics.embeddingModel }} · 写入
                   {{ formatNumber(l2CacheMetrics.counters.cache_write) }}
                 </p>
               </div>
@@ -713,6 +714,7 @@
                 </div>
 
                 <p class="text-xs text-gray-500 dark:text-gray-400">
+                  可参与率 {{ formatRatioPercent(l3CacheMetrics.summary?.participationRate) }} ·
                   Miss {{ formatNumber(l3CacheMetrics.counters.cache_miss) }} · 请求
                   {{ formatNumber(l3CacheMetrics.totals.requests) }}
                 </p>
@@ -1476,20 +1478,29 @@ const l2ModeLabel = computed(() => {
   return '命中返回'
 })
 
+const getMetricsSummaryData = (metrics) => {
+  const summary = metrics.summary || {}
+  return {
+    participationRate: toSafeNumber(summary.participationRate),
+    bypassRate: toSafeNumber(summary.bypassRate),
+    cacheableRequests: toSafeNumber(summary.cacheableRequests),
+    bypassedRequests: toSafeNumber(summary.bypassedRequests),
+    topBypassReason: summary.topBypassReason || getTopBypassReason(metrics.bypassReasons)
+  }
+}
+
 const l1CacheSummary = computed(() => {
   const metrics = l1CacheMetrics.value
   const hits = toSafeNumber(metrics.counters.cache_hit_exact)
-  const misses = toSafeNumber(metrics.counters.cache_miss)
-  const bypass = toSafeNumber(metrics.counters.cache_bypass)
   const writes = toSafeNumber(metrics.counters.cache_write)
   const lookups = toSafeNumber(metrics.totals.lookups)
-  const topReason = getTopBypassReason(metrics.bypassReasons)
+  const summary = getMetricsSummaryData(metrics)
 
   if (!metrics.enabled) {
     return {
       state: '已关闭',
-      summary: 'L1 当前未参与精确缓存。',
-      detail: '如果要观察 L1，先确认服务端是否开启了精确缓存。',
+      summary: 'L1 当前没有参与精确缓存。',
+      detail: '服务端关闭后，所有请求都会直接跳过 L1。',
       badgeClass: buildCacheBadgeClass('slate')
     }
   }
@@ -1497,36 +1508,36 @@ const l1CacheSummary = computed(() => {
   if (hits > 0) {
     return {
       state: '已有命中',
-      summary: 'L1 已经开始直接返回重复请求。',
-      detail: `已命中 ${formatNumber(hits)} 次，命中率 ${formatRatioPercent(metrics.rates.hitRate)}，继续看写入是否稳定增长。`,
+      summary: 'L1 已经开始稳定复用重复请求。',
+      detail: `可参与率 ${formatRatioPercent(summary.participationRate)}，命中率 ${formatRatioPercent(metrics.rates.hitRate)}，头号阻塞 ${summary.topBypassReason ? formatCacheBypassReason(summary.topBypassReason.reason) : '暂无'}。`,
       badgeClass: buildCacheBadgeClass('sky')
     }
   }
 
-  if (lookups > 0 || misses > 0 || writes > 0) {
+  if (lookups > 0 || writes > 0) {
     return {
-      state: '已开始查缓存',
-      summary: 'L1 已经进入查找和写入阶段。',
-      detail: `当前查找 ${formatNumber(lookups)} 次、写入 ${formatNumber(writes)} 次，下一步应该观察是否出现首个精确命中。`,
+      state: '正在预热',
+      summary: 'L1 已经开始查找和写入，但还没形成明显复用。',
+      detail: `可参与请求 ${formatNumber(summary.cacheableRequests)} 次，写入 ${formatNumber(writes)} 次，下一步关注是否出现首个稳定命中。`,
       badgeClass: buildCacheBadgeClass('emerald')
     }
   }
 
-  if (bypass > 0) {
+  if (summary.bypassedRequests > 0) {
     return {
       state: '大多绕过',
-      summary: '当前请求主要绕过了 L1。',
-      detail: topReason
-        ? `最主要原因是 ${formatCacheBypassReason(topReason.reason)}，已出现 ${formatNumber(topReason.count)} 次。`
-        : '缓存还没真正参与查找，优先先看 bypass 原因。',
+      summary: '当前请求多数还没进入 L1。',
+      detail: summary.topBypassReason
+        ? `可参与率只有 ${formatRatioPercent(summary.participationRate)}，最主要原因是 ${formatCacheBypassReason(summary.topBypassReason.reason)}。`
+        : '优先看 bypass 原因，先把可参与率拉起来。',
       badgeClass: buildCacheBadgeClass('amber')
     }
   }
 
   return {
     state: '等待样本',
-    summary: '还没有足够的数据判断 L1 状态。',
-    detail: '先观察请求是否开始进入查找、写入或 bypass。',
+    summary: 'L1 还没有足够样本。',
+    detail: '再跑几轮重复请求后，可参与率和命中率才会变得有参考价值。',
     badgeClass: buildCacheBadgeClass('slate')
   }
 })
@@ -1534,17 +1545,16 @@ const l1CacheSummary = computed(() => {
 const l2CacheSummary = computed(() => {
   const metrics = l2CacheMetrics.value
   const semanticHits = toSafeNumber(metrics.counters.cache_hit_semantic)
-  const bypass = toSafeNumber(metrics.counters.cache_bypass)
   const writes = toSafeNumber(metrics.counters.cache_write)
   const lookups = toSafeNumber(metrics.totals.lookups)
   const embeddingRequests = toSafeNumber(metrics.totals.embeddingRequests)
-  const topReason = getTopBypassReason(metrics.bypassReasons)
+  const summary = getMetricsSummaryData(metrics)
 
   if (!metrics.enabled) {
     return {
       state: '已关闭',
-      summary: 'L2 当前未参与语义缓存。',
-      detail: '如果要观察 L2，先确认语义缓存开关和 embedding 配置。',
+      summary: 'L2 当前没有参与语义缓存。',
+      detail: '服务端关闭后，所有请求都会直接跳过 L2。',
       badgeClass: buildCacheBadgeClass('slate')
     }
   }
@@ -1552,35 +1562,35 @@ const l2CacheSummary = computed(() => {
   if (semanticHits > 0) {
     return {
       state: '已命中返回',
-      summary: 'L2 已经开始直接返回语义相似结果。',
-      detail: `已命中 ${formatNumber(semanticHits)} 次，当前可以继续关注命中率和写入是否一起增长。`,
+      summary: 'L2 已经开始直接返回语义相近结果。',
+      detail: `可参与率 ${formatRatioPercent(summary.participationRate)}，语义命中率 ${formatRatioPercent(metrics.rates.semanticHitRate)}，Embedding 命中率 ${formatRatioPercent(metrics.rates.embeddingHitRate)}。`,
       badgeClass: buildCacheBadgeClass('emerald')
     }
   }
 
   if (lookups > 0 || embeddingRequests > 0 || writes > 0) {
     return {
-      state: '已开始检索',
-      summary: 'L2 已开始做语义检索，但暂时还没有出现命中返回。',
-      detail: `Lookups ${formatNumber(lookups)} 次，Embedding 请求 ${formatNumber(embeddingRequests)} 次，阈值 ${formatSimilarityThreshold(metrics.similarityThreshold)}。`,
+      state: '正在检索',
+      summary: 'L2 已经开始做 embedding 检索，但还没形成稳定语义命中。',
+      detail: `可参与请求 ${formatNumber(summary.cacheableRequests)} 次，Embedding 请求 ${formatNumber(embeddingRequests)} 次，阈值 ${formatSimilarityThreshold(metrics.similarityThreshold)}。`,
       badgeClass: buildCacheBadgeClass('sky')
     }
   }
 
-  if (bypass > 0) {
+  if (summary.bypassedRequests > 0) {
     return {
       state: '大多绕过',
-      summary: '当前请求主要绕过了 L2。',
-      detail: topReason
-        ? `最主要原因是 ${formatCacheBypassReason(topReason.reason)}，已出现 ${formatNumber(topReason.count)} 次。`
-        : 'embedding 还没真正参与检索，优先先看 bypass 原因。',
+      summary: '当前请求多数还没进入 L2。',
+      detail: summary.topBypassReason
+        ? `可参与率只有 ${formatRatioPercent(summary.participationRate)}，当前最大阻塞是 ${formatCacheBypassReason(summary.topBypassReason.reason)}。`
+        : '先把可参与率拉起来，再看语义命中率。',
       badgeClass: buildCacheBadgeClass('amber')
     }
   }
 
   return {
     state: '等待样本',
-    summary: '还没有足够的数据判断 L2 状态。',
+    summary: 'L2 还没有足够样本。',
     detail: `当前模式为命中返回，Embedding 模型 ${metrics.embeddingModel || '--'}。`,
     badgeClass: buildCacheBadgeClass('slate')
   }
@@ -1589,16 +1599,15 @@ const l2CacheSummary = computed(() => {
 const l3CacheSummary = computed(() => {
   const metrics = l3CacheMetrics.value
   const hits = toSafeNumber(metrics.counters.cache_hit_exact)
-  const bypass = toSafeNumber(metrics.counters.cache_bypass)
   const writes = toSafeNumber(metrics.counters.cache_write)
   const lookups = toSafeNumber(metrics.totals.lookups)
-  const topReason = getTopBypassReason(metrics.bypassReasons)
+  const summary = getMetricsSummaryData(metrics)
 
   if (!metrics.enabled) {
     return {
       state: '已关闭',
-      summary: 'L3 当前未参与全局共享缓存。',
-      detail: '如果要观察 L3，先确认服务端是否开启了全局缓存。',
+      summary: 'L3 当前没有参与全局共享缓存。',
+      detail: '服务端关闭后，不会产生跨 API Key 的复用收益。',
       badgeClass: buildCacheBadgeClass('slate')
     }
   }
@@ -1606,36 +1615,36 @@ const l3CacheSummary = computed(() => {
   if (hits > 0) {
     return {
       state: '已有命中',
-      summary: 'L3 已经开始在 API Key 之间复用全局缓存。',
-      detail: `已命中 ${formatNumber(hits)} 次，命中率 ${formatRatioPercent(metrics.rates.hitRate)}，继续看它是否持续带来跨 key 复用收益。`,
+      summary: 'L3 已经开始带来跨 API Key 的共享复用。',
+      detail: `可参与率 ${formatRatioPercent(summary.participationRate)}，命中率 ${formatRatioPercent(metrics.rates.hitRate)}，继续观察是否持续增长。`,
       badgeClass: buildCacheBadgeClass('violet')
     }
   }
 
   if (lookups > 0 || writes > 0) {
     return {
-      state: '已开始查缓存',
-      summary: 'L3 已经进入全局查找和写入阶段。',
-      detail: `当前查找 ${formatNumber(lookups)} 次、写入 ${formatNumber(writes)} 次，下一步应该观察是否出现首个全局命中。`,
+      state: '正在预热',
+      summary: 'L3 已经开始查找和写入，但跨 Key 复用还没起量。',
+      detail: `可参与请求 ${formatNumber(summary.cacheableRequests)} 次，写入 ${formatNumber(writes)} 次，下一步关注首个稳定全局命中。`,
       badgeClass: buildCacheBadgeClass('emerald')
     }
   }
 
-  if (bypass > 0) {
+  if (summary.bypassedRequests > 0) {
     return {
       state: '大多绕过',
-      summary: '当前请求主要绕过了 L3。',
-      detail: topReason
-        ? `最主要原因是 ${formatCacheBypassReason(topReason.reason)}，已出现 ${formatNumber(topReason.count)} 次。`
-        : '全局缓存还没真正参与查找，优先先看 bypass 原因。',
+      summary: '当前请求多数还没进入 L3。',
+      detail: summary.topBypassReason
+        ? `可参与率只有 ${formatRatioPercent(summary.participationRate)}，最主要原因是 ${formatCacheBypassReason(summary.topBypassReason.reason)}。`
+        : '先看 bypass 原因，再判断是否适合做跨 Key 共享。',
       badgeClass: buildCacheBadgeClass('amber')
     }
   }
 
   return {
     state: '等待样本',
-    summary: '还没有足够的数据判断 L3 状态。',
-    detail: '先观察请求是否开始进入全局查找、写入或 bypass。',
+    summary: 'L3 还没有足够样本。',
+    detail: '等出现更多跨 API Key 的重复请求后，L3 的价值才会更明显。',
     badgeClass: buildCacheBadgeClass('slate')
   }
 })
@@ -1668,19 +1677,21 @@ const cacheOverview = computed(() => {
   const l1Metrics = l1CacheMetrics.value
   const l2Metrics = l2CacheMetrics.value
   const l3Metrics = l3CacheMetrics.value
+  const l1Summary = getMetricsSummaryData(l1Metrics)
+  const l2Summary = getMetricsSummaryData(l2Metrics)
+  const l3Summary = getMetricsSummaryData(l3Metrics)
   const l1Hits = toSafeNumber(l1Metrics.counters.cache_hit_exact)
-  const l1Lookups = toSafeNumber(l1Metrics.totals.lookups)
-  const l1Writes = toSafeNumber(l1Metrics.counters.cache_write)
   const l2Hits = toSafeNumber(l2Metrics.counters.cache_hit_semantic)
-  const l2Lookups = toSafeNumber(l2Metrics.totals.lookups)
-  const embeddingRequests = toSafeNumber(l2Metrics.totals.embeddingRequests)
   const l3Hits = toSafeNumber(l3Metrics.counters.cache_hit_exact)
-  const l3Lookups = toSafeNumber(l3Metrics.totals.lookups)
-  const l3Writes = toSafeNumber(l3Metrics.counters.cache_write)
   const topReason = primaryBypassReason.value
   const blocker = topReason
     ? `${formatCacheBypassReason(topReason.reason)} · ${formatNumber(topReason.count)}`
     : '暂无明显阻塞'
+  const bestParticipationRate = Math.max(
+    l1Summary.participationRate,
+    l2Summary.participationRate,
+    l3Summary.participationRate
+  )
 
   if (!l1Metrics.enabled && !l2Metrics.enabled && !l3Metrics.enabled) {
     return {
@@ -1693,36 +1704,36 @@ const cacheOverview = computed(() => {
 
   if (l1Hits > 0 || l2Hits > 0 || l3Hits > 0) {
     return {
-      summary: '缓存已经开始产生实际命中收益，可以优先观察命中率和写入是否持续增长。',
-      stage: '开始命中',
-      focus: l3Hits > 0 ? '继续看 L3 共享命中' : '继续看命中率和写入',
+      summary: '缓存已经开始产生真实收益，当前重点从“能不能参与”切换到“命中能不能持续增长”。',
+      stage: '已进入复用',
+      focus: l3Hits > 0 ? '继续放大 L3 跨 Key 复用' : '继续提升命中率',
       blocker
     }
   }
 
-  if (l2Lookups > 0 || embeddingRequests > 0) {
+  if (l2Summary.cacheableRequests > 0) {
     return {
-      summary: 'L2 已开始做语义检索，正在等待首个稳定命中。',
-      stage: '语义检索',
-      focus: '看是否出现语义命中',
+      summary: 'L2 已经进入检索阶段，说明缓存链在工作，下一步重点是把可参与请求转成真实命中。',
+      stage: '语义预热',
+      focus: '先拿到首个稳定语义命中',
       blocker
     }
   }
 
-  if (l1Lookups > 0 || l1Writes > 0) {
+  if (l1Summary.cacheableRequests > 0 || l3Summary.cacheableRequests > 0) {
     return {
-      summary: 'L1 已进入查找和写入阶段，下一步应该开始出现重复请求命中。',
-      stage: '精确缓存预热',
-      focus: '看 L1 是否开始命中',
+      summary: 'Exact cache 已经开始预热，但样本还不足，当前更该关注重复请求是否稳定出现。',
+      stage: 'Exact 预热',
+      focus: '继续拉高重复请求命中',
       blocker
     }
   }
 
-  if (l3Lookups > 0 || l3Writes > 0) {
+  if (bestParticipationRate > 0) {
     return {
-      summary: 'L3 已进入全局查找和写入阶段，下一步应该开始出现跨 API Key 的共享命中。',
-      stage: '全局缓存预热',
-      focus: '看 L3 是否开始命中',
+      summary: '缓存已经开始参与，但命中样本还不够，当前先盯住可参与率是否继续提升。',
+      stage: '参与中',
+      focus: '继续提升可参与率',
       blocker
     }
   }

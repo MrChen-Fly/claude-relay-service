@@ -83,6 +83,26 @@ describe('openaiL1CacheService', () => {
     expect(first.cacheKey).toBe(second.cacheKey)
   })
 
+  it('ignores default text format noise when building the cache key', () => {
+    const first = openaiL1CacheService.buildCachePlan(baseContext)
+    const second = openaiL1CacheService.buildCachePlan({
+      ...baseContext,
+      requestBody: {
+        ...baseContext.requestBody,
+        text: {
+          format: {
+            type: 'text'
+          }
+        },
+        store: true
+      }
+    })
+
+    expect(first.cacheable).toBe(true)
+    expect(second.cacheable).toBe(true)
+    expect(first.cacheKey).toBe(second.cacheKey)
+  })
+
   it('bypasses stream requests', () => {
     const plan = openaiL1CacheService.buildCachePlan({
       ...baseContext,

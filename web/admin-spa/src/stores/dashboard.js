@@ -21,6 +21,14 @@ function createDefaultCacheMetrics() {
       },
       rates: {
         hitRate: 0
+      },
+      summary: {
+        cacheableRequests: 0,
+        bypassedRequests: 0,
+        participationRate: 0,
+        bypassRate: 0,
+        topBypassReason: null,
+        status: 'enabled'
       }
     },
     l2: {
@@ -44,6 +52,14 @@ function createDefaultCacheMetrics() {
       rates: {
         semanticHitRate: 0,
         embeddingHitRate: 0
+      },
+      summary: {
+        cacheableRequests: 0,
+        bypassedRequests: 0,
+        participationRate: 0,
+        bypassRate: 0,
+        topBypassReason: null,
+        status: 'enabled'
       }
     },
     l3: {
@@ -61,6 +77,14 @@ function createDefaultCacheMetrics() {
       },
       rates: {
         hitRate: 0
+      },
+      summary: {
+        cacheableRequests: 0,
+        bypassedRequests: 0,
+        participationRate: 0,
+        bypassRate: 0,
+        topBypassReason: null,
+        status: 'enabled'
       }
     }
   }

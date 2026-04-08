@@ -6,7 +6,13 @@ const logger = require('../../utils/logger')
 const ProxyHelper = require('../../utils/proxyHelper')
 const { filterForOpenAI } = require('../../utils/headerFilter')
 const { rankCandidates, cosineSimilarity } = require('./gptcache/similarityEvaluator')
-const { normalizeText, buildCanonicalPrompt } = require('./openaiCacheCanonicalizer')
+const {
+  normalizeText,
+  buildCanonicalPrompt,
+  buildToolProfile,
+  hasAlwaysDynamicFields,
+  isStructuredOutputRequest
+} = require('./openaiCacheCanonicalizer')
 
 const CACHE_VERSION = 'v1'
 const RESPONSE_HEADER_WHITELIST = [
@@ -16,7 +22,6 @@ const RESPONSE_HEADER_WHITELIST = [
   'x-ratelimit-remaining-requests',
   'x-ratelimit-remaining-tokens'
 ]
-const DYNAMIC_REQUEST_FIELDS = ['tools', 'tool_choice', 'background', 'response_format']
 
 function getSettings() {
   return {
@@ -65,16 +70,6 @@ function normalizeBaseApi(baseApi) {
   }
 
   return baseApi.trim().replace(/\/+$/, '')
-}
-
-function hasDynamicFields(requestBody = {}) {
-  return DYNAMIC_REQUEST_FIELDS.some((field) => {
-    const value = requestBody[field]
-    if (Array.isArray(value)) {
-      return value.length > 0
-    }
-    return value !== undefined && value !== null && value !== false
-  })
 }
 
 function createHash(input) {
@@ -169,8 +164,21 @@ function extractSemanticText(requestBody = {}) {
 
   return {
     supported: true,
-    text: result.text
+    text: result.text,
+    focalText: result.focalText || result.text
   }
+}
+
+function hasResponseToolCalls(responseBody = {}) {
+  const outputItems = Array.isArray(responseBody.output) ? responseBody.output : []
+
+  return outputItems.some(
+    (item) =>
+      item &&
+      typeof item === 'object' &&
+      typeof item.type === 'string' &&
+      item.type.endsWith('_call')
+  )
 }
 
 function extractResponseText(responseBody = {}) {
@@ -263,6 +271,9 @@ async function incrementBypassMetrics(reason) {
 function buildCachePlan(context = {}) {
   const settings = getSettings()
   const embeddingTarget = resolveEmbeddingTarget(context, settings)
+  const toolProfile = buildToolProfile(context.requestBody, {
+    semanticSafeOnly: true
+  })
 
   if (!settings.enabled) {
     return { cacheable: false, reason: 'cache_disabled' }
@@ -292,11 +303,15 @@ function buildCachePlan(context = {}) {
     return { cacheable: false, reason: 'invalid_request_body' }
   }
 
-  if (hasDynamicFields(context.requestBody)) {
+  if (hasAlwaysDynamicFields(context.requestBody)) {
     return { cacheable: false, reason: 'dynamic_request' }
   }
 
-  if (context.requestBody?.text?.format) {
+  if (!toolProfile.supported) {
+    return { cacheable: false, reason: toolProfile.reason || 'dynamic_request' }
+  }
+
+  if (isStructuredOutputRequest(context.requestBody)) {
     return { cacheable: false, reason: 'structured_output_request' }
   }
 
@@ -322,7 +337,7 @@ function buildCachePlan(context = {}) {
   const embeddingSource = buildEmbeddingSource(embeddingTarget, settings.embeddingModel)
   const textHash = createHash({
     embeddingSource,
-    text: semanticText.text
+    text: semanticText.focalText
   })
 
   return {
@@ -343,7 +358,12 @@ function buildCachePlan(context = {}) {
     maxCandidates: settings.maxCandidates,
     maxIndexedEntries: settings.maxIndexedEntries,
     rankAcceptanceThreshold: settings.rankAcceptanceThreshold,
-    queryText: semanticText.text,
+    queryText: semanticText.focalText,
+    requestText: semanticText.text,
+    requestHasTools: toolProfile.hasTools,
+    toolChoiceMode: toolProfile.choiceMode,
+    parallelToolCalls: toolProfile.parallelToolCalls,
+    toolSignature: toolProfile.hasTools ? createHash(toolProfile.tools) : null,
     textHash,
     embeddingKey: buildEmbeddingKey(textHash),
     indexKey: buildIndexKey(context.tenantId),
@@ -481,7 +501,10 @@ async function beginRequest(context = {}) {
       !entry ||
       entry.model !== plan.model ||
       !entry.textHash ||
-      entry.embeddingSource !== plan.embeddingSource
+      entry.embeddingSource !== plan.embeddingSource ||
+      (entry.toolSignature || null) !== (plan.toolSignature || null) ||
+      (entry.toolChoiceMode || 'auto') !== (plan.toolChoiceMode || 'auto') ||
+      (entry.parallelToolCalls ?? null) !== (plan.parallelToolCalls ?? null)
     ) {
       continue
     }
@@ -588,6 +611,10 @@ async function storeResponse(decision, responseContext = {}) {
     return { stored: false }
   }
 
+  if (decision.requestHasTools && hasResponseToolCalls(responseContext.body)) {
+    return { stored: false }
+  }
+
   const entryId = createEntryId()
   const entryKey = buildEntryKey(decision.tenantId, entryId)
   const cachedResponse = {
@@ -609,12 +636,16 @@ async function storeResponse(decision, responseContext = {}) {
     model: decision.model,
     textHash: decision.textHash,
     embeddingSource: decision.embeddingSource,
-    requestText: decision.queryText,
+    requestText: decision.requestText,
+    requestFocalText: decision.queryText,
     responseText: extractResponseText(responseContext.body),
     embeddingModel: decision.embeddingModel,
     similarityThreshold: decision.similarityThreshold,
     rankAcceptanceThreshold: decision.rankAcceptanceThreshold,
     contextFingerprint: decision.contextFingerprint || null,
+    toolSignature: decision.toolSignature || null,
+    toolChoiceMode: decision.toolChoiceMode || 'auto',
+    parallelToolCalls: decision.parallelToolCalls ?? null,
     cachedResponse,
     meta: {
       cacheVersion: CACHE_VERSION,

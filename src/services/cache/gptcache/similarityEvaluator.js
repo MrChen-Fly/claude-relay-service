@@ -40,6 +40,36 @@ function getTextLengthRatio(left = '', right = '') {
   return Math.min(leftLength, rightLength) / Math.max(leftLength, rightLength)
 }
 
+function tokenizeText(text = '') {
+  if (typeof text !== 'string') {
+    return []
+  }
+
+  return text
+    .toLowerCase()
+    .split(/[^a-z0-9\u4e00-\u9fff]+/u)
+    .filter(Boolean)
+}
+
+function getTokenOverlapScore(left = '', right = '') {
+  const leftTokens = new Set(tokenizeText(left))
+  const rightTokens = new Set(tokenizeText(right))
+
+  if (!leftTokens.size || !rightTokens.size) {
+    return 0
+  }
+
+  let intersection = 0
+  for (const token of leftTokens) {
+    if (rightTokens.has(token)) {
+      intersection += 1
+    }
+  }
+
+  const unionSize = leftTokens.size + rightTokens.size - intersection
+  return unionSize > 0 ? intersection / unionSize : 0
+}
+
 function getRecencyScore(createdAt) {
   if (!createdAt) {
     return 0
@@ -73,11 +103,19 @@ function evaluateCandidate({
   embedding = []
 }) {
   const similarity = cosineSimilarity(queryEmbedding, embedding)
-  const lengthRatio = getTextLengthRatio(plan.queryText, entry.requestText)
+  const focalText = entry.requestFocalText || entry.requestText || ''
+  const focalLengthRatio = getTextLengthRatio(plan.queryText, focalText)
+  const fullLengthRatio = getTextLengthRatio(plan.requestText || plan.queryText, entry.requestText)
+  const focalOverlapScore = getTokenOverlapScore(plan.queryText, focalText)
   const recencyScore = getRecencyScore(entry.meta?.createdAt)
   const contextAlignment = getContextAlignment(plan, entry)
 
-  let score = similarity * 0.86 + lengthRatio * 0.07 + recencyScore * 0.04
+  let score =
+    similarity * 0.8 +
+    focalLengthRatio * 0.06 +
+    fullLengthRatio * 0.04 +
+    focalOverlapScore * 0.07 +
+    recencyScore * 0.03
   score += contextAlignment * 0.03
 
   if (entry.provider && plan.provider && entry.provider !== plan.provider) {
@@ -109,7 +147,9 @@ function evaluateCandidate({
     accepted,
     hasContextConflict,
     factors: {
-      lengthRatio,
+      focalLengthRatio,
+      fullLengthRatio,
+      focalOverlapScore,
       recencyScore,
       contextAlignment
     }

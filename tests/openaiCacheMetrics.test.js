@@ -82,6 +82,14 @@ describe('redis.getOpenAICacheMetrics', () => {
         },
         rates: {
           hitRate: 0.6
+        },
+        summary: {
+          cacheableRequests: 20,
+          bypassedRequests: 3,
+          participationRate: 0.8696,
+          bypassRate: 0.1304,
+          topBypassReason: { reason: 'stream_request', count: 2 },
+          status: 'enabled'
         }
       },
       l2: {
@@ -108,6 +116,14 @@ describe('redis.getOpenAICacheMetrics', () => {
         rates: {
           semanticHitRate: 0.5,
           embeddingHitRate: 0.75
+        },
+        summary: {
+          cacheableRequests: 20,
+          bypassedRequests: 2,
+          participationRate: 0.9091,
+          bypassRate: 0.0909,
+          topBypassReason: { reason: 'stream_request', count: 1 },
+          status: 'enabled'
         }
       },
       l3: {
@@ -125,6 +141,14 @@ describe('redis.getOpenAICacheMetrics', () => {
         },
         rates: {
           hitRate: 0.4
+        },
+        summary: {
+          cacheableRequests: 10,
+          bypassedRequests: 2,
+          participationRate: 0.8333,
+          bypassRate: 0.1667,
+          topBypassReason: { reason: 'temperature_too_high', count: 2 },
+          status: 'enabled'
         }
       }
     })

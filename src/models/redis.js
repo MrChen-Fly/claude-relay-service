@@ -4252,6 +4252,19 @@ function calculateOpenAICacheRate(numerator, denominator) {
   return Number((numerator / denominator).toFixed(4))
 }
 
+function buildOpenAICacheSummary({ enabled, counters = {}, totals = {}, bypassReasons = [] }) {
+  const topBypassReason = bypassReasons[0] || null
+
+  return {
+    cacheableRequests: totals.lookups || 0,
+    bypassedRequests: counters.cache_bypass || 0,
+    participationRate: calculateOpenAICacheRate(totals.lookups || 0, totals.requests || 0),
+    bypassRate: calculateOpenAICacheRate(counters.cache_bypass || 0, totals.requests || 0),
+    topBypassReason,
+    status: enabled ? 'enabled' : 'disabled'
+  }
+}
+
 redisClient.getOpenAICacheMetrics = async function () {
   const defaultMetrics = {
     l1: {
@@ -4269,6 +4282,14 @@ redisClient.getOpenAICacheMetrics = async function () {
       },
       rates: {
         hitRate: 0
+      },
+      summary: {
+        cacheableRequests: 0,
+        bypassedRequests: 0,
+        participationRate: 0,
+        bypassRate: 0,
+        topBypassReason: null,
+        status: config.openaiCache?.enabled !== false ? 'enabled' : 'disabled'
       }
     },
     l2: {
@@ -4295,6 +4316,14 @@ redisClient.getOpenAICacheMetrics = async function () {
       rates: {
         semanticHitRate: 0,
         embeddingHitRate: 0
+      },
+      summary: {
+        cacheableRequests: 0,
+        bypassedRequests: 0,
+        participationRate: 0,
+        bypassRate: 0,
+        topBypassReason: null,
+        status: config.openaiCache?.l2?.enabled !== false ? 'enabled' : 'disabled'
       }
     },
     l3: {
@@ -4312,6 +4341,14 @@ redisClient.getOpenAICacheMetrics = async function () {
       },
       rates: {
         hitRate: 0
+      },
+      summary: {
+        cacheableRequests: 0,
+        bypassedRequests: 0,
+        participationRate: 0,
+        bypassRate: 0,
+        topBypassReason: null,
+        status: config.openaiCache?.l3?.enabled !== false ? 'enabled' : 'disabled'
       }
     }
   }
@@ -4368,7 +4405,16 @@ redisClient.getOpenAICacheMetrics = async function () {
         },
         rates: {
           hitRate: calculateOpenAICacheRate(l1Counters.cache_hit_exact, l1Lookups)
-        }
+        },
+        summary: buildOpenAICacheSummary({
+          enabled: defaultMetrics.l1.enabled,
+          counters: l1Counters,
+          totals: {
+            lookups: l1Lookups,
+            requests: l1Lookups + l1Counters.cache_bypass
+          },
+          bypassReasons: l1BypassReasons
+        })
       },
       l2: {
         ...defaultMetrics.l2,
@@ -4382,7 +4428,16 @@ redisClient.getOpenAICacheMetrics = async function () {
         rates: {
           semanticHitRate: calculateOpenAICacheRate(l2Counters.cache_hit_semantic, l2Lookups),
           embeddingHitRate: calculateOpenAICacheRate(l2Counters.embedding_hit, l2EmbeddingRequests)
-        }
+        },
+        summary: buildOpenAICacheSummary({
+          enabled: defaultMetrics.l2.enabled,
+          counters: l2Counters,
+          totals: {
+            lookups: l2Lookups,
+            requests: l2Lookups + l2Counters.cache_bypass
+          },
+          bypassReasons: l2BypassReasons
+        })
       },
       l3: {
         ...defaultMetrics.l3,
@@ -4394,7 +4449,16 @@ redisClient.getOpenAICacheMetrics = async function () {
         },
         rates: {
           hitRate: calculateOpenAICacheRate(l3Counters.cache_hit_exact, l3Lookups)
-        }
+        },
+        summary: buildOpenAICacheSummary({
+          enabled: defaultMetrics.l3.enabled,
+          counters: l3Counters,
+          totals: {
+            lookups: l3Lookups,
+            requests: l3Lookups + l3Counters.cache_bypass
+          },
+          bypassReasons: l3BypassReasons
+        })
       }
     }
   } catch (error) {

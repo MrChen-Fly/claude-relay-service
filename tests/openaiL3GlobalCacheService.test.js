@@ -86,6 +86,26 @@ describe('openaiL3GlobalCacheService', () => {
     expect(first.cacheKey).toBe(second.cacheKey)
   })
 
+  it('ignores default text format noise when building the global cache key', () => {
+    const first = openaiL3GlobalCacheService.buildCachePlan(baseContext)
+    const second = openaiL3GlobalCacheService.buildCachePlan({
+      ...baseContext,
+      requestBody: {
+        ...baseContext.requestBody,
+        text: {
+          format: {
+            type: 'text'
+          }
+        },
+        store: true
+      }
+    })
+
+    expect(first.cacheable).toBe(true)
+    expect(second.cacheable).toBe(true)
+    expect(first.cacheKey).toBe(second.cacheKey)
+  })
+
   it('does not require tenant id for global cache plans', () => {
     const plan = openaiL3GlobalCacheService.buildCachePlan(baseContext)
 

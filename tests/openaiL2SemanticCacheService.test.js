@@ -87,8 +87,9 @@ describe('openaiL2SemanticCacheService', () => {
 
     expect(plan.cacheable).toBe(true)
     expect(plan.model).toBe('gpt-5')
-    expect(plan.queryText).toContain('system: You are helpful.')
-    expect(plan.queryText).toContain('user: hello world')
+    expect(plan.queryText).toBe('hello world')
+    expect(plan.requestText).toContain('system: You are helpful.')
+    expect(plan.requestText).toContain('user: hello world')
     expect(plan.embeddingKey).toContain('cache:openai:l2:embed:v1:')
   })
 
@@ -107,8 +108,9 @@ describe('openaiL2SemanticCacheService', () => {
     })
 
     expect(plan.cacheable).toBe(true)
-    expect(plan.queryText).toContain('system: You are helpful.')
-    expect(plan.queryText).toContain('user: hello world')
+    expect(plan.queryText).toBe('hello world')
+    expect(plan.requestText).toContain('system: You are helpful.')
+    expect(plan.requestText).toContain('user: hello world')
   })
 
   it('strips stable Codex CLI boilerplate from semantic instructions', () => {
@@ -123,7 +125,8 @@ describe('openaiL2SemanticCacheService', () => {
     })
 
     expect(plan.cacheable).toBe(true)
-    expect(plan.queryText).toBe('user: hello world')
+    expect(plan.queryText).toBe('hello world')
+    expect(plan.requestText).toBe('user: hello world')
   })
 
   it('supports responses message items with structured content and no type field', () => {
@@ -145,8 +148,84 @@ describe('openaiL2SemanticCacheService', () => {
     })
 
     expect(plan.cacheable).toBe(true)
-    expect(plan.queryText).toContain('system: keep format stable')
-    expect(plan.queryText).toContain('user: hello world')
+    expect(plan.queryText).toBe('hello world')
+    expect(plan.requestText).toContain('system: keep format stable')
+    expect(plan.requestText).toContain('user: hello world')
+  })
+
+  it('treats default text format as a cacheable plain-text request', () => {
+    const plan = openaiL2SemanticCacheService.buildCachePlan({
+      ...baseContext,
+      requestBody: {
+        ...baseContext.requestBody,
+        text: {
+          format: {
+            type: 'text'
+          }
+        }
+      }
+    })
+
+    expect(plan.cacheable).toBe(true)
+    expect(plan.queryText).toBe('hello world')
+  })
+
+  it('allows safe function tool requests when tool choice is automatic', () => {
+    const plan = openaiL2SemanticCacheService.buildCachePlan({
+      ...baseContext,
+      requestBody: {
+        ...baseContext.requestBody,
+        tools: [
+          {
+            type: 'function',
+            name: 'shell_command',
+            description: 'Run a terminal command',
+            parameters: {
+              type: 'object',
+              properties: {
+                command: { type: 'string' }
+              }
+            }
+          }
+        ],
+        tool_choice: 'auto',
+        parallel_tool_calls: true
+      }
+    })
+
+    expect(plan.cacheable).toBe(true)
+    expect(plan.toolSignature).toBeTruthy()
+    expect(plan.toolChoiceMode).toBe('auto')
+  })
+
+  it('bypasses forced function-tool requests for semantic cache reuse', () => {
+    const plan = openaiL2SemanticCacheService.buildCachePlan({
+      ...baseContext,
+      requestBody: {
+        ...baseContext.requestBody,
+        tools: [
+          {
+            type: 'function',
+            name: 'shell_command',
+            parameters: {
+              type: 'object',
+              properties: {
+                command: { type: 'string' }
+              }
+            }
+          }
+        ],
+        tool_choice: {
+          type: 'function',
+          name: 'shell_command'
+        }
+      }
+    })
+
+    expect(plan).toEqual({
+      cacheable: false,
+      reason: 'dynamic_request'
+    })
   })
 
   it('bypasses unsupported multimodal content', () => {
@@ -203,7 +282,7 @@ describe('openaiL2SemanticCacheService', () => {
     })
 
     expect(plan.cacheable).toBe(true)
-    expect(plan.queryText).toContain('user: hello world')
+    expect(plan.queryText).toBe('hello world')
   })
 
   it('returns a semantic hit when the best candidate exceeds the similarity threshold', async () => {
@@ -305,6 +384,7 @@ describe('openaiL2SemanticCacheService', () => {
         model: 'gpt-5',
         textHash: 'hash-1',
         embeddingSource: 'source-hash-1',
+        requestText: 'system: helpful\nuser: hello world',
         queryText: 'user: hello world',
         queryEmbedding: [0.1, 0.2],
         embeddingKey: 'cache:openai:l2:embed:v1:hash-1',
@@ -341,7 +421,8 @@ describe('openaiL2SemanticCacheService', () => {
     expect(redis.setOpenAIL2Entry).toHaveBeenCalledWith(
       expect.stringContaining('cache:openai:l2:entry:v1:api-key-1:'),
       expect.objectContaining({
-        requestText: 'user: hello world',
+        requestText: 'system: helpful\nuser: hello world',
+        requestFocalText: 'user: hello world',
         responseText: 'hello back',
         cachedResponse: expect.objectContaining({
           statusCode: 200,
@@ -358,6 +439,51 @@ describe('openaiL2SemanticCacheService', () => {
       200
     )
     expect(redis.incrementOpenAIL2CacheMetric).toHaveBeenCalledWith('cache_write')
+  })
+
+  it('skips storing semantic entries when a tool-enabled response emits tool calls', async () => {
+    const result = await openaiL2SemanticCacheService.storeResponse(
+      {
+        kind: 'miss',
+        tenantId: 'api-key-1',
+        provider: 'openai-responses',
+        endpoint: 'responses',
+        model: 'gpt-5',
+        textHash: 'hash-1',
+        embeddingSource: 'source-hash-1',
+        requestText: 'user: hello world',
+        queryText: 'hello world',
+        queryEmbedding: [0.1, 0.2],
+        embeddingKey: 'cache:openai:l2:embed:v1:hash-1',
+        embeddingModel: 'text-embedding-3-small',
+        similarityThreshold: 0.95,
+        entryTtlSeconds: 604800,
+        embeddingTtlSeconds: 2592000,
+        indexKey: 'cache:openai:l2:index:v1:api-key-1',
+        maxIndexedEntries: 200,
+        requestHasTools: true
+      },
+      {
+        statusCode: 200,
+        body: {
+          id: 'resp_tool_1',
+          output: [
+            {
+              type: 'function_call',
+              name: 'shell_command',
+              arguments: '{"command":"dir"}'
+            }
+          ]
+        },
+        headers: {
+          'x-request-id': 'req-tool-1'
+        }
+      }
+    )
+
+    expect(result).toEqual({ stored: false })
+    expect(redis.setOpenAIL2Entry).not.toHaveBeenCalled()
+    expect(redis.addOpenAIL2IndexEntry).not.toHaveBeenCalled()
   })
 
   it('rejects borderline semantic hits when context ranking falls below the acceptance threshold', async () => {

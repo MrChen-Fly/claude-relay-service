@@ -1,7 +1,12 @@
 const crypto = require('crypto')
 const config = require('../../../config/config')
 const redis = require('../../models/redis')
-const { buildCanonicalPrompt } = require('./openaiCacheCanonicalizer')
+const {
+  buildCanonicalPrompt,
+  normalizeCacheValue,
+  hasAlwaysDynamicFields: hasAlwaysDynamicFieldsForCache,
+  hasUnsafeToolDefinitions: hasUnsafeToolDefinitionsForCache
+} = require('./openaiCacheCanonicalizer')
 
 const CACHE_VERSION = 'v1'
 const REQUEST_HEADER_WHITELIST = ['openai-beta', 'openai-version', 'version']
@@ -12,23 +17,6 @@ const RESPONSE_HEADER_WHITELIST = [
   'x-ratelimit-remaining-requests',
   'x-ratelimit-remaining-tokens'
 ]
-const NUMERIC_REQUEST_FIELDS = new Set([
-  'temperature',
-  'top_p',
-  'presence_penalty',
-  'frequency_penalty',
-  'n',
-  'max_output_tokens'
-])
-const OMITTED_REQUEST_FIELDS = new Set([
-  'stream',
-  'prompt_cache_key',
-  'promptCacheKey',
-  'session_id',
-  'conversation_id'
-])
-const ALWAYS_DYNAMIC_REQUEST_FIELDS = ['background', 'web_search_options']
-
 function getSettings() {
   return {
     enabled: config.openaiCache?.enabled !== false,
@@ -46,41 +34,6 @@ function getSettings() {
 
 function normalizeString(value) {
   return typeof value === 'string' ? value.trim() : value
-}
-
-function normalizeScalarValue(key, value) {
-  const normalized = normalizeString(value)
-  if (NUMERIC_REQUEST_FIELDS.has(key)) {
-    const numericValue = getNumericValue(normalized)
-    if (numericValue !== null) {
-      return numericValue
-    }
-  }
-  return normalized
-}
-
-function normalizeValue(value, parentKey = '') {
-  if (Array.isArray(value)) {
-    return value.map((item) => normalizeValue(item, parentKey))
-  }
-
-  if (!value || typeof value !== 'object') {
-    return normalizeScalarValue(parentKey, value)
-  }
-
-  const normalized = {}
-  for (const key of Object.keys(value).sort()) {
-    if (OMITTED_REQUEST_FIELDS.has(key)) {
-      continue
-    }
-
-    const normalizedValue = normalizeValue(value[key], key)
-    if (normalizedValue !== undefined) {
-      normalized[key] = normalizedValue
-    }
-  }
-
-  return normalized
 }
 
 function normalizeHeaders(headers = {}) {
@@ -105,39 +58,12 @@ function pickReplayHeaders(headers = {}) {
   return normalized
 }
 
-function isCacheSafeFunctionTool(tool) {
-  if (!tool || typeof tool !== 'object' || tool.type !== 'function') {
-    return false
-  }
-
-  if (typeof tool.name === 'string' && tool.name.trim()) {
-    return true
-  }
-
-  return typeof tool.function?.name === 'string' && tool.function.name.trim()
+function hasUnsafeToolDefinitions(requestBody = {}) {
+  return hasUnsafeToolDefinitionsForCache(requestBody)
 }
 
 function hasAlwaysDynamicFields(requestBody = {}) {
-  return ALWAYS_DYNAMIC_REQUEST_FIELDS.some((field) => {
-    const value = requestBody[field]
-    if (Array.isArray(value)) {
-      return value.length > 0
-    }
-    return value !== undefined && value !== null && value !== false
-  })
-}
-
-function hasUnsafeToolDefinitions(requestBody = {}) {
-  const { tools } = requestBody
-  if (tools === undefined || tools === null) {
-    return false
-  }
-
-  if (!Array.isArray(tools)) {
-    return true
-  }
-
-  return tools.some((tool) => !isCacheSafeFunctionTool(tool))
+  return hasAlwaysDynamicFieldsForCache(requestBody)
 }
 
 function hasDynamicFields(requestBody = {}) {
@@ -166,7 +92,7 @@ function buildSignature(context, resolvedModel) {
     ...(context.requestBody || {}),
     ...(resolvedModel ? { model: resolvedModel } : {})
   }
-  const normalizedBody = normalizeValue(rawBody)
+  const normalizedBody = normalizeCacheValue(rawBody)
   const canonicalPrompt = buildCanonicalPrompt(rawBody)
 
   if (canonicalPrompt.supported && canonicalPrompt.items.length) {
