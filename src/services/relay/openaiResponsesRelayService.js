@@ -176,6 +176,45 @@ class OpenAIResponsesRelayService {
     return clientPayload
   }
 
+  _normalizeNonStreamSuccessData(response) {
+    if (!response || response.data === undefined || response.data === null) {
+      return response?.data
+    }
+
+    if (Buffer.isBuffer(response.data)) {
+      const decoded = response.data.toString('utf8')
+      if (!decoded.trim()) {
+        return ''
+      }
+
+      try {
+        return JSON.parse(decoded)
+      } catch (_) {
+        return decoded
+      }
+    }
+
+    if (typeof response.data === 'string') {
+      const trimmed = response.data.trim()
+      if (!trimmed) {
+        return ''
+      }
+
+      try {
+        return JSON.parse(trimmed)
+      } catch (_) {
+        return response.data
+      }
+    }
+
+    return response.data
+  }
+
+  _hasStructuredNonStreamSuccessBody(response) {
+    const payload = response?.data
+    return !!payload && typeof payload === 'object' && !payload.pipe && !Buffer.isBuffer(payload)
+  }
+
   // 处理请求转发
   async handleRequest(req, res, account, apiKeyData, options = {}) {
     let abortController = null
@@ -308,6 +347,30 @@ class OpenAIResponsesRelayService {
 
         response = await axios(requestOptions)
         selectedAttempt = attempt
+
+        if (!attempt.body?.stream) {
+          response.data = this._normalizeNonStreamSuccessData(response)
+
+          if (
+            response.status >= 200 &&
+            response.status < 300 &&
+            !this._hasStructuredNonStreamSuccessBody(response) &&
+            index < attempts.length - 1
+          ) {
+            logger.warn(
+              'Upstream returned an empty or non-JSON success body, retrying alternate protocol',
+              {
+                accountId: account.id,
+                accountName: account.name,
+                currentPath: attempt.path,
+                nextAttempt: `${index + 2}/${attempts.length}`,
+                status: response.status,
+                responseType: typeof response.data
+              }
+            )
+            continue
+          }
+        }
 
         if (response.status >= 400) {
           await this._consumeErrorResponseData(response)

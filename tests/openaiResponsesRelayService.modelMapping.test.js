@@ -284,6 +284,116 @@ describe('openaiResponsesRelayService account model mapping integration', () => 
     })
   })
 
+  it('retries the alternate protocol when the first endpoint returns an empty success body', async () => {
+    openaiResponsesAccountService.getAccount.mockResolvedValue({
+      id: 'responses-empty-1',
+      name: 'Empty Success Account',
+      baseApi: 'https://relay.example.com',
+      apiKey: 'secret-key',
+      providerEndpoint: 'responses'
+    })
+    axios
+      .mockResolvedValueOnce({
+        status: 200,
+        statusText: 'OK',
+        headers: {
+          'content-type': 'application/json'
+        },
+        data: ''
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        data: {
+          id: 'chatcmpl_empty_fallback_1',
+          created: 1710000001,
+          model: 'mimo-v2-pro',
+          choices: [
+            {
+              index: 0,
+              finish_reason: 'stop',
+              message: {
+                role: 'assistant',
+                content: 'Recovered via fallback'
+              }
+            }
+          ],
+          usage: {
+            prompt_tokens: 8,
+            completion_tokens: 5,
+            total_tokens: 13
+          }
+        }
+      })
+
+    jest.spyOn(openaiResponsesRelayService, '_throttledUpdateLastUsedAt').mockResolvedValue()
+
+    const req = {
+      method: 'POST',
+      path: '/v1/responses',
+      headers: {},
+      body: {
+        model: 'mimo-v2-pro',
+        input: [{ role: 'user', content: 'hello' }],
+        stream: false
+      },
+      once: jest.fn(),
+      removeListener: jest.fn()
+    }
+    const res = {
+      once: jest.fn(),
+      removeListener: jest.fn(),
+      status: jest.fn().mockReturnThis(),
+      json: jest.fn((payload) => payload)
+    }
+
+    const result = await openaiResponsesRelayService.handleRequest(
+      req,
+      res,
+      { id: 'responses-empty-1', name: 'Empty Success Account', dailyQuota: '0' },
+      { id: 'api-key-empty-1' },
+      {
+        attempts: [
+          {
+            path: '/v1/responses',
+            body: {
+              model: 'mimo-v2-pro',
+              input: [{ role: 'user', content: 'hello' }],
+              stream: false
+            },
+            transform: 'passthrough',
+            requestedModel: 'mimo-v2-pro'
+          },
+          {
+            path: '/v1/chat/completions',
+            body: {
+              model: 'mimo-v2-pro',
+              messages: [{ role: 'user', content: 'hello' }],
+              stream: false
+            },
+            transform: 'chat_to_responses',
+            requestedModel: 'mimo-v2-pro'
+          }
+        ]
+      }
+    )
+
+    expect(axios).toHaveBeenCalledTimes(2)
+    expect(axios.mock.calls[0][0].url).toBe('https://relay.example.com/v1/responses')
+    expect(axios.mock.calls[1][0].url).toBe('https://relay.example.com/v1/chat/completions')
+    expect(res.status).toHaveBeenCalledWith(200)
+    expect(result).toMatchObject({
+      object: 'response',
+      model: 'mimo-v2-pro',
+      usage: {
+        input_tokens: 8,
+        output_tokens: 5,
+        total_tokens: 13
+      }
+    })
+  })
+
   it('records chat completions usage from non-stream responses', async () => {
     const res = {
       status: jest.fn().mockReturnThis(),
