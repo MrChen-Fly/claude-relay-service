@@ -1137,13 +1137,11 @@ const emptyCacheMetrics = {
   },
   l2: {
     enabled: true,
-    shadowMode: true,
     embeddingModel: 'text-embedding-3-small',
     similarityThreshold: 0.95,
     bypassReasons: [],
     counters: {
       cache_hit_semantic: 0,
-      cache_shadow_hit: 0,
       cache_miss: 0,
       cache_bypass: 0,
       cache_write: 0,
@@ -1157,7 +1155,6 @@ const emptyCacheMetrics = {
     },
     rates: {
       semanticHitRate: 0,
-      shadowHitRate: 0,
       embeddingHitRate: 0
     }
   }
@@ -1340,28 +1337,16 @@ const l1CacheMetrics = computed(() => dashboardData.value.cacheMetrics?.l1 || em
 const l2CacheMetrics = computed(() => dashboardData.value.cacheMetrics?.l2 || emptyCacheMetrics.l2)
 const l1BypassReasons = computed(() => (l1CacheMetrics.value.bypassReasons || []).slice(0, 3))
 const l2BypassReasons = computed(() => (l2CacheMetrics.value.bypassReasons || []).slice(0, 3))
-const l2PrimaryMetricLabel = computed(() =>
-  l2CacheMetrics.value.shadowMode ? 'Shadow 召回率' : '语义命中率'
-)
-const l2PrimaryMetricCountLabel = computed(() =>
-  l2CacheMetrics.value.shadowMode ? 'Shadow 召回' : '语义命中'
-)
-const l2PrimaryMetricRate = computed(() =>
-  l2CacheMetrics.value.shadowMode
-    ? l2CacheMetrics.value.rates.shadowHitRate
-    : l2CacheMetrics.value.rates.semanticHitRate
-)
-const l2PrimaryMetricCount = computed(() =>
-  l2CacheMetrics.value.shadowMode
-    ? l2CacheMetrics.value.counters.cache_shadow_hit
-    : l2CacheMetrics.value.counters.cache_hit_semantic
-)
+const l2PrimaryMetricLabel = computed(() => '语义命中率')
+const l2PrimaryMetricCountLabel = computed(() => '语义命中')
+const l2PrimaryMetricRate = computed(() => l2CacheMetrics.value.rates.semanticHitRate)
+const l2PrimaryMetricCount = computed(() => l2CacheMetrics.value.counters.cache_hit_semantic)
 const l2ModeLabel = computed(() => {
   if (!l2CacheMetrics.value.enabled) {
     return '已关闭'
   }
 
-  return l2CacheMetrics.value.shadowMode ? 'Shadow 观测' : '命中返回'
+  return '命中返回'
 })
 
 const l1CacheSummary = computed(() => {
@@ -1422,7 +1407,6 @@ const l1CacheSummary = computed(() => {
 const l2CacheSummary = computed(() => {
   const metrics = l2CacheMetrics.value
   const semanticHits = toSafeNumber(metrics.counters.cache_hit_semantic)
-  const shadowHits = toSafeNumber(metrics.counters.cache_shadow_hit)
   const bypass = toSafeNumber(metrics.counters.cache_bypass)
   const writes = toSafeNumber(metrics.counters.cache_write)
   const lookups = toSafeNumber(metrics.totals.lookups)
@@ -1438,7 +1422,7 @@ const l2CacheSummary = computed(() => {
     }
   }
 
-  if (!metrics.shadowMode && semanticHits > 0) {
+  if (semanticHits > 0) {
     return {
       state: '已命中返回',
       summary: 'L2 已经开始直接返回语义相似结果。',
@@ -1447,21 +1431,10 @@ const l2CacheSummary = computed(() => {
     }
   }
 
-  if (metrics.shadowMode && shadowHits > 0) {
-    return {
-      state: 'Shadow 有召回',
-      summary: 'L2 正在 Shadow 观测，而且已经出现可复用的相似请求。',
-      detail: `已召回 ${formatNumber(shadowHits)} 次，但当前仍只观测不直接返回缓存。`,
-      badgeClass: buildCacheBadgeClass('emerald')
-    }
-  }
-
   if (lookups > 0 || embeddingRequests > 0 || writes > 0) {
     return {
-      state: metrics.shadowMode ? '观测中' : '已开始检索',
-      summary: metrics.shadowMode
-        ? 'L2 已开始做 embedding 检索，目前仍处于 Shadow 观测。'
-        : 'L2 已开始做语义检索，但暂时还没有出现命中返回。',
+      state: '已开始检索',
+      summary: 'L2 已开始做语义检索，但暂时还没有出现命中返回。',
       detail: `Lookups ${formatNumber(lookups)} 次，Embedding 请求 ${formatNumber(embeddingRequests)} 次，阈值 ${formatSimilarityThreshold(metrics.similarityThreshold)}。`,
       badgeClass: buildCacheBadgeClass('sky')
     }
@@ -1479,9 +1452,9 @@ const l2CacheSummary = computed(() => {
   }
 
   return {
-    state: metrics.shadowMode ? '等待 Shadow 样本' : '等待样本',
+    state: '等待样本',
     summary: '还没有足够的数据判断 L2 状态。',
-    detail: `当前模式为 ${metrics.shadowMode ? 'Shadow 观测' : '命中返回'}，Embedding 模型 ${metrics.embeddingModel || '--'}。`,
+    detail: `当前模式为命中返回，Embedding 模型 ${metrics.embeddingModel || '--'}。`,
     badgeClass: buildCacheBadgeClass('slate')
   }
 })
@@ -1515,7 +1488,6 @@ const cacheOverview = computed(() => {
   const l1Lookups = toSafeNumber(l1Metrics.totals.lookups)
   const l1Writes = toSafeNumber(l1Metrics.counters.cache_write)
   const l2Hits = toSafeNumber(l2Metrics.counters.cache_hit_semantic)
-  const l2ShadowHits = toSafeNumber(l2Metrics.counters.cache_shadow_hit)
   const l2Lookups = toSafeNumber(l2Metrics.totals.lookups)
   const embeddingRequests = toSafeNumber(l2Metrics.totals.embeddingRequests)
   const topReason = primaryBypassReason.value
@@ -1541,22 +1513,11 @@ const cacheOverview = computed(() => {
     }
   }
 
-  if (l2ShadowHits > 0) {
-    return {
-      summary: 'L2 已经在 Shadow 模式下召回到相似请求，离真实命中只差一步。',
-      stage: 'Shadow 召回',
-      focus: '评估是否切到命中返回',
-      blocker
-    }
-  }
-
   if (l2Lookups > 0 || embeddingRequests > 0) {
     return {
-      summary: l2Metrics.shadowMode
-        ? 'L2 已开始做相似度观测，但当前还只是在验证召回效果。'
-        : 'L2 已开始做语义检索，正在等待首个稳定命中。',
-      stage: l2Metrics.shadowMode ? 'Shadow 观测' : '语义检索',
-      focus: l2Metrics.shadowMode ? '看是否出现 Shadow 召回' : '看是否出现语义命中',
+      summary: 'L2 已开始做语义检索，正在等待首个稳定命中。',
+      stage: '语义检索',
+      focus: '看是否出现语义命中',
       blocker
     }
   }

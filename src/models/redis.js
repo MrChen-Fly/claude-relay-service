@@ -4230,7 +4230,6 @@ redisClient.getOpenAICacheMetrics = async function () {
     },
     l2: {
       enabled: config.openaiCache?.l2?.enabled !== false,
-      shadowMode: config.openaiCache?.l2?.shadowMode !== false,
       embeddingModel: config.openaiCache?.l2?.embeddingModel || 'text-embedding-3-small',
       similarityThreshold:
         typeof config.openaiCache?.l2?.similarityThreshold === 'number'
@@ -4239,7 +4238,6 @@ redisClient.getOpenAICacheMetrics = async function () {
       bypassReasons: [],
       counters: {
         cache_hit_semantic: 0,
-        cache_shadow_hit: 0,
         cache_miss: 0,
         cache_bypass: 0,
         cache_write: 0,
@@ -4253,7 +4251,6 @@ redisClient.getOpenAICacheMetrics = async function () {
       },
       rates: {
         semanticHitRate: 0,
-        shadowHitRate: 0,
         embeddingHitRate: 0
       }
     }
@@ -4278,7 +4275,6 @@ redisClient.getOpenAICacheMetrics = async function () {
     ])
     const l2Counters = buildOpenAICacheMetricCounters(l2RawMetrics, [
       'cache_hit_semantic',
-      'cache_shadow_hit',
       'cache_miss',
       'cache_bypass',
       'cache_write',
@@ -4289,8 +4285,7 @@ redisClient.getOpenAICacheMetrics = async function () {
     const l2BypassReasons = buildOpenAICacheBypassReasons(l2RawMetrics)
 
     const l1Lookups = l1Counters.cache_hit_exact + l1Counters.cache_miss
-    const l2Lookups =
-      l2Counters.cache_hit_semantic + l2Counters.cache_shadow_hit + l2Counters.cache_miss
+    const l2Lookups = l2Counters.cache_hit_semantic + l2Counters.cache_miss
     const l2EmbeddingRequests = l2Counters.embedding_hit + l2Counters.embedding_miss
 
     return {
@@ -4317,7 +4312,6 @@ redisClient.getOpenAICacheMetrics = async function () {
         },
         rates: {
           semanticHitRate: calculateOpenAICacheRate(l2Counters.cache_hit_semantic, l2Lookups),
-          shadowHitRate: calculateOpenAICacheRate(l2Counters.cache_shadow_hit, l2Lookups),
           embeddingHitRate: calculateOpenAICacheRate(l2Counters.embedding_hit, l2EmbeddingRequests)
         }
       }

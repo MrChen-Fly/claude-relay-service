@@ -7,10 +7,20 @@ jest.mock('../src/utils/logger', () => ({
 }))
 
 const redis = require('../src/models/redis')
+const config = require('../config/config')
 
 describe('redis.getOpenAICacheMetrics', () => {
   beforeEach(() => {
     jest.clearAllMocks()
+    config.openaiCache = {
+      ...(config.openaiCache || {}),
+      l2: {
+        ...(config.openaiCache?.l2 || {}),
+        enabled: true,
+        embeddingModel: 'BAAI/bge-m3',
+        similarityThreshold: 0.95
+      }
+    }
   })
 
   it('aggregates raw L1 and L2 counters into dashboard-friendly metrics', async () => {
@@ -25,8 +35,7 @@ describe('redis.getOpenAICacheMetrics', () => {
         'bypass_reason:dynamic_tools': '1'
       })
       .mockResolvedValueOnce({
-        cache_hit_semantic: '4',
-        cache_shadow_hit: '6',
+        cache_hit_semantic: '10',
         cache_miss: '10',
         cache_bypass: '2',
         cache_write: '5',
@@ -65,7 +74,6 @@ describe('redis.getOpenAICacheMetrics', () => {
       },
       l2: {
         enabled: true,
-        shadowMode: true,
         embeddingModel: 'BAAI/bge-m3',
         similarityThreshold: 0.95,
         bypassReasons: [
@@ -73,8 +81,7 @@ describe('redis.getOpenAICacheMetrics', () => {
           { reason: 'structured_output_request', count: 1 }
         ],
         counters: {
-          cache_hit_semantic: 4,
-          cache_shadow_hit: 6,
+          cache_hit_semantic: 10,
           cache_miss: 10,
           cache_bypass: 2,
           cache_write: 5,
@@ -87,8 +94,7 @@ describe('redis.getOpenAICacheMetrics', () => {
           embeddingRequests: 12
         },
         rates: {
-          semanticHitRate: 0.2,
-          shadowHitRate: 0.3,
+          semanticHitRate: 0.5,
           embeddingHitRate: 0.75
         }
       }

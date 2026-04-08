@@ -25,13 +25,11 @@ function createDefaultCacheMetrics() {
     },
     l2: {
       enabled: true,
-      shadowMode: true,
       embeddingModel: 'text-embedding-3-small',
       similarityThreshold: 0.95,
       bypassReasons: [],
       counters: {
         cache_hit_semantic: 0,
-        cache_shadow_hit: 0,
         cache_miss: 0,
         cache_bypass: 0,
         cache_write: 0,
@@ -45,7 +43,6 @@ function createDefaultCacheMetrics() {
       },
       rates: {
         semanticHitRate: 0,
-        shadowHitRate: 0,
         embeddingHitRate: 0
       }
     }

@@ -105,7 +105,7 @@ describe('openaiCacheChainService', () => {
           cacheKey: 'l1-key-1'
         },
         l2Decision: {
-          kind: 'shadow_hit',
+          kind: 'miss',
           tenantId: 'api-key-1'
         },
         semanticRequestText: 'user: hello world',

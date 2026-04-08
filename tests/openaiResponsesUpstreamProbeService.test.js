@@ -19,7 +19,8 @@ jest.mock('../src/services/openaiProtocol/capabilityProfile', () => ({
     supportsStreaming: true,
     supportsTools: true,
     supportsReasoning: true,
-    supportsJsonSchema: true
+    supportsJsonSchema: true,
+    supportsNonStreamingResponses: true
   }))
 }))
 jest.mock('../src/utils/proxyHelper', () => ({
@@ -169,6 +170,7 @@ describe('openaiResponsesUpstreamProbeService', () => {
       selectedUpstreamPath: '/v1/chat/completions',
       fallbackUsed: true,
       capabilities: {
+        supportsNonStreamingResponses: true,
         supportsStreaming: true,
         supportsTools: true,
         supportsReasoning: false,
@@ -176,6 +178,7 @@ describe('openaiResponsesUpstreamProbeService', () => {
       }
     })
     expect(openaiResponsesAccountService.updateAccount).toHaveBeenCalledWith('responses-1', {
+      supportsNonStreamingResponses: true,
       supportsStreaming: true,
       supportsTools: true,
       supportsReasoning: false,
@@ -202,5 +205,89 @@ describe('openaiResponsesUpstreamProbeService', () => {
         responseType: 'stream'
       })
     )
+  })
+
+  it('marks non-stream responses as unsupported when upstream requires stream=true', async () => {
+    const account = {
+      id: 'responses-2',
+      name: 'Stream Required Account',
+      baseApi: 'https://relay.example.com',
+      apiKey: 'secret-key',
+      providerEndpoint: 'responses',
+      modelMapping: {}
+    }
+
+    axios
+      .mockResolvedValueOnce({
+        status: 400,
+        statusText: 'Bad Request',
+        data: {
+          detail: 'Stream must be set to true'
+        }
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        statusText: 'OK',
+        data: createSSEStream([
+          'data: {"choices":[{"delta":{"content":"OK"}}]}\n\n',
+          'data: [DONE]\n\n'
+        ])
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        statusText: 'OK',
+        data: createSSEStream([
+          'data: {"choices":[{"delta":{"content":"OK"}}]}\n\n',
+          'data: [DONE]\n\n'
+        ])
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        statusText: 'OK',
+        data: {
+          output_text: 'tool-ok'
+        }
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        statusText: 'OK',
+        data: {
+          output_text: 'reasoning-ok'
+        }
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        statusText: 'OK',
+        data: {
+          output: [
+            {
+              content: [
+                {
+                  text: '{"ok":"yes"}'
+                }
+              ]
+            }
+          ]
+        }
+      })
+
+    const result = await openaiResponsesUpstreamProbeService.probeAccount(account, {
+      model: 'gpt-5.4'
+    })
+
+    expect(result.capabilities).toEqual({
+      supportsNonStreamingResponses: false,
+      supportsStreaming: true,
+      supportsTools: true,
+      supportsReasoning: true,
+      supportsJsonSchema: true
+    })
+    expect(openaiResponsesAccountService.updateAccount).toHaveBeenCalledWith('responses-2', {
+      supportsNonStreamingResponses: false,
+      supportsStreaming: true,
+      supportsTools: true,
+      supportsReasoning: true,
+      supportsJsonSchema: true
+    })
   })
 })

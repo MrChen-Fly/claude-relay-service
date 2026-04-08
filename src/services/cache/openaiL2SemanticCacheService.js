@@ -20,7 +20,6 @@ const DYNAMIC_REQUEST_FIELDS = ['tools', 'tool_choice', 'background', 'response_
 function getSettings() {
   return {
     enabled: config.openaiCache?.l2?.enabled !== false,
-    shadowMode: config.openaiCache?.l2?.shadowMode !== false,
     embeddingBaseUrl: normalizeBaseApi(config.openaiCache?.l2?.embeddingBaseUrl || ''),
     embeddingApiKey: config.openaiCache?.l2?.embeddingApiKey || '',
     embeddingModel: config.openaiCache?.l2?.embeddingModel || 'text-embedding-3-small',
@@ -443,7 +442,6 @@ function buildCachePlan(context = {}) {
     endpoint: context.endpoint,
     model,
     provider: context.provider || 'openai-responses',
-    shadowMode: settings.shadowMode,
     embeddingSource,
     embeddingBaseUrl: embeddingTarget.baseApi,
     embeddingApiKey: embeddingTarget.apiKey,
@@ -544,7 +542,7 @@ async function getOrCreateEmbedding(context, plan) {
 }
 
 /**
- * Resolves whether a request should bypass, miss, shadow-hit, or hit L2 cache.
+ * Resolves whether a request should bypass, miss, or hit L2 cache.
  *
  * @param {Object} context - Request cache context.
  * @returns {Promise<Object>} Semantic cache decision.
@@ -639,20 +637,6 @@ async function beginRequest(context = {}) {
     }
   }
 
-  if (plan.shadowMode) {
-    await incrementMetric('cache_shadow_hit')
-    return {
-      kind: 'shadow_hit',
-      ...plan,
-      queryEmbedding,
-      similarity: bestCandidate.similarity,
-      score: bestCandidate.score,
-      candidate: bestCandidate.entry,
-      candidateKey: bestCandidate.entryKey,
-      evaluation: bestCandidate.factors
-    }
-  }
-
   await incrementMetric('cache_hit_semantic')
   return {
     kind: 'hit',
@@ -701,7 +685,7 @@ async function createCaptureDecision(context = {}) {
  * @returns {Promise<Object>} Store result.
  */
 async function storeResponse(decision, responseContext = {}) {
-  if (!decision || !['miss', 'shadow_hit'].includes(decision.kind)) {
+  if (!decision || decision.kind !== 'miss') {
     return { stored: false }
   }
 

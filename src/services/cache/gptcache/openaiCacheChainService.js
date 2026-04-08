@@ -123,7 +123,7 @@ class OpenAICacheChainService {
       await openaiL1CacheService.storeResponse(decision.l1Decision, responseContext)
     }
 
-    if (['miss', 'shadow_hit'].includes(decision.l2Decision?.kind)) {
+    if (decision.l2Decision?.kind === 'miss') {
       await openaiL2SemanticCacheService.storeResponse(decision.l2Decision, responseContext)
     }
 

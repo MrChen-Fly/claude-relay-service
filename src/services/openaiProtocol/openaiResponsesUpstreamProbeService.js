@@ -51,15 +51,11 @@ class OpenAIResponsesUpstreamProbeService {
       model
     )
 
-    const primaryProbe = await this._runProbe(account, {
-      model: resolvedModel,
-      body: createOpenAITestPayload(resolvedModel, {
-        prompt: 'Reply with OK only.',
-        maxTokens: 64,
-        stream: false
-      })
+    const { primaryProbe, supportsNonStreamingResponses } =
+      await this._probePrimaryNonStreamingResponses(account, resolvedModel)
+    const capabilities = await this._probeCapabilities(account, resolvedModel, {
+      supportsNonStreamingResponses
     })
-    const capabilities = await this._probeCapabilities(account, resolvedModel)
 
     await openaiResponsesAccountService.updateAccount(account.id, { ...capabilities })
 
@@ -76,7 +72,45 @@ class OpenAIResponsesUpstreamProbeService {
     }
   }
 
-  async _probeCapabilities(account, model) {
+  async _probePrimaryNonStreamingResponses(account, model) {
+    try {
+      return {
+        primaryProbe: await this._runProbe(account, {
+          model,
+          body: createOpenAITestPayload(model, {
+            prompt: 'Reply with OK only.',
+            maxTokens: 64,
+            stream: false
+          })
+        }),
+        supportsNonStreamingResponses: true
+      }
+    } catch (error) {
+      if (!this._isNonStreamingResponsesUnsupported(error)) {
+        throw error
+      }
+
+      logger.warn('Primary non-stream responses probe is not supported, retrying with stream', {
+        accountId: account.id,
+        message: error.message
+      })
+
+      return {
+        primaryProbe: await this._runProbe(account, {
+          model,
+          body: createOpenAITestPayload(model, {
+            prompt: 'Reply with OK only.',
+            maxTokens: 64,
+            stream: true
+          }),
+          responseMode: 'stream'
+        }),
+        supportsNonStreamingResponses: false
+      }
+    }
+  }
+
+  async _probeCapabilities(account, model, overrides = {}) {
     const defaults = inferAccountCapabilities(account, 'openai-responses')
     const supportsStreaming = await this._probeCapability(
       account,
@@ -184,6 +218,8 @@ class OpenAIResponsesUpstreamProbeService {
     )
 
     return {
+      supportsNonStreamingResponses:
+        overrides.supportsNonStreamingResponses ?? defaults.supportsNonStreamingResponses,
       supportsStreaming,
       supportsTools,
       supportsReasoning,
@@ -492,9 +528,9 @@ class OpenAIResponsesUpstreamProbeService {
     }
 
     const errorData = error?.response?.data?.error || error?.response?.data || {}
-    const haystack = `${errorData.code || ''} ${errorData.type || ''} ${errorData.message || ''} ${
-      error?.message || ''
-    }`
+    const haystack = `${errorData.code || ''} ${errorData.type || ''} ${
+      errorData.detail || ''
+    } ${errorData.message || ''} ${error?.message || ''}`
       .toLowerCase()
       .trim()
 
@@ -516,6 +552,30 @@ class OpenAIResponsesUpstreamProbeService {
     ]
 
     return unsupportedPatterns.some((pattern) => pattern.test(haystack))
+  }
+
+  _isNonStreamingResponsesUnsupported(error) {
+    const status = error?.statusCode || error?.response?.status
+    if (![400, 403, 422].includes(status)) {
+      return false
+    }
+
+    const errorData = error?.response?.data?.error || error?.response?.data || {}
+    const haystack = `${errorData.code || ''} ${errorData.type || ''} ${
+      errorData.detail || ''
+    } ${errorData.message || ''} ${error?.message || ''}`
+      .toLowerCase()
+      .trim()
+
+    if (!haystack) {
+      return false
+    }
+
+    return (
+      /stream must be set to true/.test(haystack) ||
+      (/non[- ]?stream/.test(haystack) && /not supported|unsupported|required/.test(haystack)) ||
+      (/responses/.test(haystack) && /streaming required/.test(haystack))
+    )
   }
 }
 

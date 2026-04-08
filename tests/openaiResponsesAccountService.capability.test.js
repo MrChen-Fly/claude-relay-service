@@ -1,6 +1,11 @@
 const openaiResponsesAccountService = require('../src/services/account/openaiResponsesAccountService')
+const redis = require('../src/models/redis')
 
 describe('openaiResponsesAccountService optional capability normalization', () => {
+  afterEach(() => {
+    jest.restoreAllMocks()
+  })
+
   it.each([
     [true, 'true'],
     [false, 'false'],
@@ -57,5 +62,23 @@ describe('openaiResponsesAccountService optional capability normalization', () =
         'mimo-v2-pro'
       )
     ).toBe(true)
+  })
+
+  it('persists non-stream responses capability overrides on update', async () => {
+    const hset = jest.fn().mockResolvedValue(undefined)
+
+    jest.spyOn(redis, 'getClientSafe').mockReturnValue({ hset })
+    jest.spyOn(openaiResponsesAccountService, 'getAccount').mockResolvedValue({
+      id: 'responses-cap-1',
+      name: 'Capability Account'
+    })
+
+    await openaiResponsesAccountService.updateAccount('responses-cap-1', {
+      supportsNonStreamingResponses: true
+    })
+
+    expect(hset).toHaveBeenCalledWith('openai_responses_account:responses-cap-1', {
+      supportsNonStreamingResponses: 'true'
+    })
   })
 })

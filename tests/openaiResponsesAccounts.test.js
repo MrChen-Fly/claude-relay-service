@@ -129,6 +129,7 @@ describe('admin openai-responses account maxConcurrentTasks validation', () => {
       selectedUpstreamPath: '/v1/chat/completions',
       fallbackUsed: true,
       capabilities: {
+        supportsNonStreamingResponses: true,
         supportsStreaming: true,
         supportsTools: true,
         supportsReasoning: false,
@@ -161,6 +162,7 @@ describe('admin openai-responses account maxConcurrentTasks validation', () => {
         selectedUpstreamPath: '/v1/chat/completions',
         fallbackUsed: true,
         capabilities: {
+          supportsNonStreamingResponses: true,
           supportsStreaming: true,
           supportsTools: true,
           supportsReasoning: false,

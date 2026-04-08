@@ -67,7 +67,6 @@ describe('openaiL2SemanticCacheService', () => {
       ...(config.openaiCache || {}),
       l2: {
         enabled: true,
-        shadowMode: true,
         embeddingBaseUrl: '',
         embeddingApiKey: '',
         embeddingModel: 'text-embedding-3-small',
@@ -192,7 +191,7 @@ describe('openaiL2SemanticCacheService', () => {
     expect(plan.queryText).toContain('user: hello world')
   })
 
-  it('returns a shadow hit when the best candidate exceeds the similarity threshold', async () => {
+  it('returns a semantic hit when the best candidate exceeds the similarity threshold', async () => {
     const plan = openaiL2SemanticCacheService.buildCachePlan(baseContext)
 
     redis.getOpenAIL2Embedding.mockResolvedValue({
@@ -223,13 +222,13 @@ describe('openaiL2SemanticCacheService', () => {
 
     const result = await openaiL2SemanticCacheService.beginRequest(baseContext)
 
-    expect(result.kind).toBe('shadow_hit')
+    expect(result.kind).toBe('hit')
     expect(result.similarity).toBeGreaterThan(0.95)
     expect(result.candidate).toMatchObject({
       model: 'gpt-5'
     })
     expect(redis.incrementOpenAIL2CacheMetric).toHaveBeenCalledWith('embedding_hit')
-    expect(redis.incrementOpenAIL2CacheMetric).toHaveBeenCalledWith('cache_shadow_hit')
+    expect(redis.incrementOpenAIL2CacheMetric).toHaveBeenCalledWith('cache_hit_semantic')
   })
 
   it('requests and caches embeddings when no embedding cache exists', async () => {

@@ -26,7 +26,8 @@ describe('openai capability profile', () => {
       needsStreaming: false,
       needsTools: true,
       needsReasoning: true,
-      needsJsonSchema: true
+      needsJsonSchema: true,
+      needsNonStreamingResponses: true
     })
   })
 
@@ -43,7 +44,8 @@ describe('openai capability profile', () => {
       supportsStreaming: true,
       supportsTools: true,
       supportsReasoning: true,
-      supportsJsonSchema: false
+      supportsJsonSchema: false,
+      supportsNonStreamingResponses: true
     })
   })
 
@@ -62,10 +64,32 @@ describe('openai capability profile', () => {
           needsStreaming: true,
           needsTools: false,
           needsReasoning: false,
-          needsJsonSchema: true
+          needsJsonSchema: true,
+          needsNonStreamingResponses: false
         },
         accountCapabilities
       )
     ).toEqual([])
+  })
+
+  it('treats explicit non-stream responses incompatibility as a mismatch', () => {
+    expect(
+      getCapabilityMismatchReasons(
+        {
+          needsStreaming: false,
+          needsTools: false,
+          needsReasoning: false,
+          needsJsonSchema: false,
+          needsNonStreamingResponses: true
+        },
+        inferAccountCapabilities(
+          {
+            providerEndpoint: 'responses',
+            supportsNonStreamingResponses: 'false'
+          },
+          'openai-responses'
+        )
+      )
+    ).toEqual(['non_stream_responses'])
   })
 })

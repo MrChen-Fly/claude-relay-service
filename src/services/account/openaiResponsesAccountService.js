@@ -96,7 +96,8 @@ class OpenAIResponsesAccountService {
       supportsStreaming,
       supportsTools,
       supportsReasoning,
-      supportsJsonSchema
+      supportsJsonSchema,
+      supportsNonStreamingResponses
     } = options
 
     // 验证必填字段
@@ -158,7 +159,10 @@ class OpenAIResponsesAccountService {
       supportsStreaming: this._normalizeOptionalCapability(supportsStreaming),
       supportsTools: this._normalizeOptionalCapability(supportsTools),
       supportsReasoning: this._normalizeOptionalCapability(supportsReasoning),
-      supportsJsonSchema: this._normalizeOptionalCapability(supportsJsonSchema)
+      supportsJsonSchema: this._normalizeOptionalCapability(supportsJsonSchema),
+      supportsNonStreamingResponses: this._normalizeOptionalCapability(
+        supportsNonStreamingResponses
+      )
     }
 
     // 保存到 Redis
@@ -261,7 +265,8 @@ class OpenAIResponsesAccountService {
       'supportsStreaming',
       'supportsTools',
       'supportsReasoning',
-      'supportsJsonSchema'
+      'supportsJsonSchema',
+      'supportsNonStreamingResponses'
     ]) {
       if (updates[field] !== undefined) {
         updates[field] = this._normalizeOptionalCapability(updates[field])

@@ -228,4 +228,30 @@ describe('unifiedOpenAIScheduler capability filtering', () => {
       statusCode: 503
     })
   })
+
+  it('skips shared accounts that are explicitly incompatible with non-stream responses requests', async () => {
+    openaiResponsesAccountService.getAllAccounts.mockResolvedValue([
+      {
+        id: 'responses-5',
+        name: 'Stream Only Account',
+        isActive: true,
+        status: 'active',
+        accountType: 'shared',
+        schedulable: true,
+        providerEndpoint: 'responses',
+        supportsNonStreamingResponses: 'false',
+        priority: '10'
+      }
+    ])
+
+    await expect(
+      scheduler.selectAccountForApiKey({ id: 'key-5', name: 'Key Five' }, null, 'gpt-5.4', {
+        needsStreaming: false,
+        needsTools: false,
+        needsReasoning: false,
+        needsJsonSchema: false,
+        needsNonStreamingResponses: true
+      })
+    ).rejects.toThrow('No available OpenAI accounts support the requested features')
+  })
 })

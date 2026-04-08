@@ -47,7 +47,8 @@ function inferRequestCapabilities(requestBody = {}, clientProtocol = 'chat_compl
     needsStreaming: requestBody.stream !== false,
     needsTools: false,
     needsReasoning: false,
-    needsJsonSchema: false
+    needsJsonSchema: false,
+    needsNonStreamingResponses: false
   }
 
   if (clientProtocol === 'responses') {
@@ -58,6 +59,7 @@ function inferRequestCapabilities(requestBody = {}, clientProtocol = 'chat_compl
       hasResponsesToolItems(requestBody.input)
     profile.needsReasoning = Boolean(requestBody.reasoning?.effort)
     profile.needsJsonSchema = requestBody.text?.format?.type === 'json_schema'
+    profile.needsNonStreamingResponses = requestBody.stream === false
     return profile
   }
 
@@ -78,7 +80,8 @@ function inferAccountCapabilities(account = {}, accountType = 'openai') {
       supportsStreaming: true,
       supportsTools: true,
       supportsReasoning: true,
-      supportsJsonSchema: true
+      supportsJsonSchema: true,
+      supportsNonStreamingResponses: true
     }
   }
 
@@ -92,13 +95,15 @@ function inferAccountCapabilities(account = {}, accountType = 'openai') {
           supportsStreaming: true,
           supportsTools: true,
           supportsReasoning: true,
-          supportsJsonSchema: true
+          supportsJsonSchema: true,
+          supportsNonStreamingResponses: true
         }
       : {
           supportsStreaming: true,
           supportsTools: true,
           supportsReasoning: true,
-          supportsJsonSchema: false
+          supportsJsonSchema: false,
+          supportsNonStreamingResponses: true
         }
 
   return {
@@ -118,6 +123,10 @@ function inferAccountCapabilities(account = {}, accountType = 'openai') {
     supportsJsonSchema: normalizeCapabilityFlag(
       account.supportsJsonSchema,
       defaultCapabilities.supportsJsonSchema
+    ),
+    supportsNonStreamingResponses: normalizeCapabilityFlag(
+      account.supportsNonStreamingResponses,
+      defaultCapabilities.supportsNonStreamingResponses
     )
   }
 }
@@ -136,6 +145,12 @@ function getCapabilityMismatchReasons(requestCapabilities = {}, accountCapabilit
   }
   if (requestCapabilities.needsJsonSchema && !accountCapabilities.supportsJsonSchema) {
     reasons.push('json_schema')
+  }
+  if (
+    requestCapabilities.needsNonStreamingResponses &&
+    !accountCapabilities.supportsNonStreamingResponses
+  ) {
+    reasons.push('non_stream_responses')
   }
 
   return reasons

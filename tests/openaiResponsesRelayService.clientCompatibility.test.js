@@ -134,6 +134,12 @@ describe('openaiResponsesRelayService standard responses client compatibility', 
     )
 
     expect(axios).toHaveBeenCalledTimes(2)
+    expect(openaiResponsesAccountService.updateAccount).toHaveBeenCalledWith(
+      'responses-compat-1',
+      {
+        supportsNonStreamingResponses: false
+      }
+    )
     expect(axios.mock.calls[1][0].data).toMatchObject({
       model: 'gpt-5.4',
       stream: true,

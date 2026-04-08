@@ -374,6 +374,7 @@ class OpenAIResponsesRelayService {
 
         if (response.status >= 400) {
           await this._consumeErrorResponseData(response)
+          await this._learnAccountCompatibilityFromError(fullAccount, attempt, response)
 
           const compatibilityRetryAttempt = this._buildCompatibilityRetryAttempt(attempt, response)
           if (compatibilityRetryAttempt) {
@@ -814,6 +815,82 @@ class OpenAIResponsesRelayService {
     }
 
     return ''
+  }
+
+  _isNonStreamingResponsesCompatibilityAttempt(attempt) {
+    return (
+      !!attempt &&
+      attempt.transform === 'passthrough' &&
+      this._isResponsesPath(attempt.path) &&
+      attempt.clientStream !== true
+    )
+  }
+
+  _detectNonStreamingResponsesCompatibilityIssue(attempt, response) {
+    if (
+      !this._isNonStreamingResponsesCompatibilityAttempt(attempt) ||
+      ![400, 403, 422].includes(response?.status)
+    ) {
+      return null
+    }
+
+    const errorMessage = this._extractUpstreamErrorMessage(response?.data).toLowerCase()
+    if (!errorMessage) {
+      return null
+    }
+
+    if (/stream must be set to true/.test(errorMessage)) {
+      return {
+        reason: 'stream_required',
+        errorMessage
+      }
+    }
+
+    if (
+      /non[- ]?stream/.test(errorMessage) &&
+      /not supported|unsupported|required/.test(errorMessage)
+    ) {
+      return {
+        reason: 'non_stream_unsupported',
+        errorMessage
+      }
+    }
+
+    return null
+  }
+
+  async _learnAccountCompatibilityFromError(account, attempt, response) {
+    const compatibilityIssue = this._detectNonStreamingResponsesCompatibilityIssue(
+      attempt,
+      response
+    )
+    if (!compatibilityIssue || !account?.id) {
+      return null
+    }
+
+    if (account.supportsNonStreamingResponses === 'false') {
+      return compatibilityIssue
+    }
+
+    try {
+      await openaiResponsesAccountService.updateAccount(account.id, {
+        supportsNonStreamingResponses: false
+      })
+      account.supportsNonStreamingResponses = 'false'
+
+      logger.warn('Learned non-stream responses incompatibility from upstream error', {
+        accountId: account.id,
+        accountName: account.name,
+        reason: compatibilityIssue.reason
+      })
+    } catch (error) {
+      logger.warn('Failed to persist non-stream responses incompatibility signal', {
+        accountId: account.id,
+        message: error.message
+      })
+    }
+
+    return compatibilityIssue
   }
 
   _normalizeResponsesInputToList(body = {}) {

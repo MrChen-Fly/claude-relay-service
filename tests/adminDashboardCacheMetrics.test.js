@@ -125,13 +125,11 @@ describe('admin dashboard cache metrics', () => {
       },
       l2: {
         enabled: true,
-        shadowMode: true,
         embeddingModel: 'BAAI/bge-m3',
         similarityThreshold: 0.95,
         bypassReasons: [{ reason: 'structured_output_request', count: 2 }],
         counters: {
-          cache_hit_semantic: 0,
-          cache_shadow_hit: 3,
+          cache_hit_semantic: 3,
           cache_miss: 7,
           cache_bypass: 2,
           cache_write: 3,
@@ -144,8 +142,7 @@ describe('admin dashboard cache metrics', () => {
           embeddingRequests: 5
         },
         rates: {
-          semanticHitRate: 0,
-          shadowHitRate: 0.3,
+          semanticHitRate: 0.3,
           embeddingHitRate: 0.8
         }
       }
@@ -176,10 +173,9 @@ describe('admin dashboard cache metrics', () => {
           })
         }),
         l2: expect.objectContaining({
-          shadowMode: true,
           bypassReasons: [{ reason: 'structured_output_request', count: 2 }],
           rates: expect.objectContaining({
-            shadowHitRate: 0.3,
+            semanticHitRate: 0.3,
             embeddingHitRate: 0.8
           })
         })

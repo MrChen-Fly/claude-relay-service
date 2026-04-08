@@ -263,14 +263,14 @@ describe('openaiResponsesRelayService L2 cache integration', () => {
 
   it('stores cacheable upstream responses through the unified chain service', async () => {
     openaiCacheChainService.beginRequest.mockResolvedValue({
-      kind: 'shadow_hit',
+      kind: 'miss',
       source: 'upstream',
       l1Decision: {
         kind: 'bypass',
         reason: 'cache_disabled'
       },
       l2Decision: {
-        kind: 'shadow_hit',
+        kind: 'miss',
         tenantId: 'api-key-1'
       }
     })
@@ -304,7 +304,7 @@ describe('openaiResponsesRelayService L2 cache integration', () => {
 
     expect(openaiCacheChainService.storeUpstreamResponse).toHaveBeenCalledWith(
       expect.objectContaining({
-        kind: 'shadow_hit',
+        kind: 'miss',
         l2Decision: expect.objectContaining({
           tenantId: 'api-key-1'
         })
