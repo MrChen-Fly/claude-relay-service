@@ -91,12 +91,114 @@ describe('openaiL1CacheService', () => {
     expect(plan.cacheKey).toContain('cache:openai:l1:v1:api-key-1:openai:responses:')
   })
 
-  it('bypasses tool-enabled requests', () => {
+  it('allows function tool requests to participate in exact cache', () => {
     const plan = openaiL1CacheService.buildCachePlan({
       ...baseContext,
       requestBody: {
         ...baseContext.requestBody,
-        tools: [{ type: 'function', function: { name: 'search' } }]
+        parallel_tool_calls: true,
+        tool_choice: 'auto',
+        tools: [
+          {
+            type: 'function',
+            name: 'shell_command',
+            description: 'Run a terminal command',
+            parameters: {
+              type: 'object',
+              properties: {
+                command: { type: 'string' }
+              },
+              required: ['command']
+            }
+          }
+        ]
+      }
+    })
+
+    expect(plan.cacheable).toBe(true)
+    expect(plan.cacheKey).toContain('cache:openai:l1:v1:api-key-1:openai:responses:')
+  })
+
+  it('keeps equivalent function-tool requests on the same normalized cache key', () => {
+    const first = openaiL1CacheService.buildCachePlan({
+      ...baseContext,
+      requestBody: {
+        ...baseContext.requestBody,
+        tool_choice: {
+          type: 'function',
+          name: 'shell_command'
+        },
+        tools: [
+          {
+            type: 'function',
+            name: 'shell_command',
+            description: 'Run a terminal command',
+            parameters: {
+              type: 'object',
+              properties: {
+                command: { type: 'string' }
+              },
+              required: ['command']
+            }
+          }
+        ]
+      }
+    })
+    const second = openaiL1CacheService.buildCachePlan({
+      ...baseContext,
+      requestBody: {
+        model: 'gpt-5',
+        input: 'hello world',
+        temperature: '0.2',
+        tools: [
+          {
+            description: 'Run a terminal command',
+            name: 'shell_command',
+            parameters: {
+              required: ['command'],
+              properties: {
+                command: { type: 'string' }
+              },
+              type: 'object'
+            },
+            type: 'function'
+          }
+        ],
+        tool_choice: {
+          name: 'shell_command',
+          type: 'function'
+        }
+      }
+    })
+
+    expect(first.cacheable).toBe(true)
+    expect(second.cacheable).toBe(true)
+    expect(first.cacheKey).toBe(second.cacheKey)
+  })
+
+  it('bypasses requests with non-function tools', () => {
+    const plan = openaiL1CacheService.buildCachePlan({
+      ...baseContext,
+      requestBody: {
+        ...baseContext.requestBody,
+        tools: [{ type: 'web_search_preview' }]
+      }
+    })
+
+    expect(plan).toEqual({
+      cacheable: false,
+      reason: 'dynamic_tools'
+    })
+  })
+
+  it('bypasses requests with realtime search options', () => {
+    const plan = openaiL1CacheService.buildCachePlan({
+      ...baseContext,
+      requestBody: {
+        ...baseContext.requestBody,
+        web_search_options: {
+          search_context_size: 'high'
+        }
       }
     })
 

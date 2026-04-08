@@ -26,14 +26,7 @@ const OMITTED_REQUEST_FIELDS = new Set([
   'session_id',
   'conversation_id'
 ])
-const DYNAMIC_REQUEST_FIELDS = [
-  'tools',
-  'tool_choice',
-  'parallel_tool_calls',
-  'background',
-  'web_search_options',
-  'response_format'
-]
+const ALWAYS_DYNAMIC_REQUEST_FIELDS = ['background', 'web_search_options']
 
 function getSettings() {
   return {
@@ -111,14 +104,47 @@ function pickReplayHeaders(headers = {}) {
   return normalized
 }
 
-function hasDynamicFields(requestBody = {}) {
-  return DYNAMIC_REQUEST_FIELDS.some((field) => {
+function isCacheSafeFunctionTool(tool) {
+  if (!tool || typeof tool !== 'object' || tool.type !== 'function') {
+    return false
+  }
+
+  if (typeof tool.name === 'string' && tool.name.trim()) {
+    return true
+  }
+
+  return typeof tool.function?.name === 'string' && tool.function.name.trim()
+}
+
+function hasAlwaysDynamicFields(requestBody = {}) {
+  return ALWAYS_DYNAMIC_REQUEST_FIELDS.some((field) => {
     const value = requestBody[field]
     if (Array.isArray(value)) {
       return value.length > 0
     }
     return value !== undefined && value !== null && value !== false
   })
+}
+
+function hasUnsafeToolDefinitions(requestBody = {}) {
+  const { tools } = requestBody
+  if (tools === undefined || tools === null) {
+    return false
+  }
+
+  if (!Array.isArray(tools)) {
+    return true
+  }
+
+  return tools.some((tool) => !isCacheSafeFunctionTool(tool))
+}
+
+function hasDynamicFields(requestBody = {}) {
+  if (hasAlwaysDynamicFields(requestBody)) {
+    return true
+  }
+
+  return hasUnsafeToolDefinitions(requestBody)
 }
 
 function getNumericValue(value) {
