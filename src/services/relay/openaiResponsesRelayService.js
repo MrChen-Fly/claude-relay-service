@@ -231,6 +231,11 @@ class OpenAIResponsesRelayService {
       if (cacheDecision.kind === 'hit') {
         req.removeListener('close', handleClientDisconnect)
         res.removeListener('close', handleClientDisconnect)
+
+        if (isStreamRequest) {
+          return this._replayCachedStreamResponse(res, cacheDecision)
+        }
+
         return openaiCacheChainService.replayCachedResponse(res, cacheDecision)
       }
 
@@ -451,6 +456,19 @@ class OpenAIResponsesRelayService {
         response.data &&
         typeof response.data.pipe === 'function'
       ) {
+        const streamCacheDecision = await openaiCacheChainService.prepareStreamWriteback(
+          cacheDecision,
+          {
+            tenantId: apiKeyData?.id,
+            provider: 'openai-responses',
+            endpoint: cacheEndpoint,
+            requestBody: req.body,
+            requestHeaders: req.headers,
+            resolvedModel: cacheResolvedModel,
+            isStream: true,
+            fullAccount
+          }
+        )
         releaseConcurrencyInFinally = false
         return this._handleStreamResponse(
           response,
@@ -462,6 +480,7 @@ class OpenAIResponsesRelayService {
           req,
           requestMetadata,
           responseAdapter,
+          streamCacheDecision,
           async () => {
             if (leaseRefreshInterval) {
               clearInterval(leaseRefreshInterval)
@@ -747,6 +766,7 @@ class OpenAIResponsesRelayService {
     if (attempt.transform === 'responses_to_chat') {
       const converter = new CodexToOpenAIConverter()
       const state = converter.createStreamState()
+      let finalPayload = null
 
       return {
         convertJson: (payload) => converter.convertResponse(payload, requestedModel),
@@ -756,11 +776,20 @@ class OpenAIResponsesRelayService {
             return
           }
 
+          if (
+            eventData?.type === 'response.completed' ||
+            eventData?.type === 'response.failed' ||
+            eventData?.type === 'response.incomplete'
+          ) {
+            finalPayload = converter.convertResponse(eventData, requestedModel)
+          }
+
           const converted = converter.convertStreamChunk(eventData, requestedModel, state)
           for (const chunk of converted) {
             writeChunk(typeof chunk === 'string' ? chunk : toSSE(chunk))
           }
         },
+        getFinalPayload: () => finalPayload,
         finalizeStream: (writeChunk) => {
           writeChunk('data: [DONE]\n\n')
         }
@@ -770,6 +799,7 @@ class OpenAIResponsesRelayService {
     if (attempt.transform === 'chat_to_responses') {
       const converter = new ChatToResponsesConverter()
       const state = converter.createStreamState()
+      let finalPayload = null
 
       return {
         convertJson: (payload) => converter.convertResponse(payload, requestedModel),
@@ -781,13 +811,374 @@ class OpenAIResponsesRelayService {
 
           const convertedEvents = converter.convertStreamChunk(eventData, requestedModel, state)
           for (const event of convertedEvents) {
+            if (event?.type === 'response.completed' && event.response) {
+              finalPayload = event.response
+            }
             writeChunk(toSSE(event))
           }
-        }
+        },
+        getFinalPayload: () => finalPayload
       }
     }
 
     return null
+  }
+
+  _createResponsesStreamCaptureState() {
+    return {
+      response: null,
+      outputItems: new Map()
+    }
+  }
+
+  _captureResponsesStreamEvent(state, eventData = {}) {
+    if (!state || !eventData || typeof eventData !== 'object') {
+      return
+    }
+
+    if (
+      ['response.created', 'response.in_progress', 'response.completed'].includes(eventData.type) &&
+      eventData.response &&
+      typeof eventData.response === 'object'
+    ) {
+      state.response = {
+        ...(state.response || {}),
+        ...eventData.response
+      }
+    }
+
+    if (
+      ['response.output_item.added', 'response.output_item.done'].includes(eventData.type) &&
+      Number.isInteger(eventData.output_index) &&
+      eventData.item &&
+      typeof eventData.item === 'object'
+    ) {
+      state.outputItems.set(eventData.output_index, eventData.item)
+    }
+  }
+
+  _buildCapturedResponsesPayload(state, fallbackResponseBody = null) {
+    const source =
+      fallbackResponseBody && typeof fallbackResponseBody === 'object'
+        ? fallbackResponseBody
+        : state?.response && typeof state.response === 'object'
+          ? state.response
+          : null
+
+    if (!source) {
+      return null
+    }
+
+    const response = {
+      ...source
+    }
+
+    if (state?.outputItems instanceof Map && state.outputItems.size > 0) {
+      response.output = Array.from(state.outputItems.entries())
+        .sort((left, right) => left[0] - right[0])
+        .map(([, item]) => item)
+    }
+
+    return response
+  }
+
+  async _replayCachedStreamResponse(res, cacheDecision = {}) {
+    const entry = cacheDecision.entry || {}
+    const responseBody = entry.body
+
+    for (const [headerName, headerValue] of Object.entries(entry.headers || {})) {
+      res.setHeader(headerName, headerValue)
+    }
+
+    res.setHeader('Content-Type', 'text/event-stream')
+    res.setHeader('Cache-Control', 'no-cache')
+    res.setHeader('Connection', 'keep-alive')
+    res.setHeader('X-Accel-Buffering', 'no')
+
+    await openaiCacheChainService.recordCacheReplay(cacheDecision)
+
+    const events = this._buildCachedStreamEvents(responseBody)
+    for (const event of events) {
+      if (res.destroyed) {
+        break
+      }
+      res.write(event)
+    }
+
+    if (!res.destroyed) {
+      res.end()
+    }
+
+    return res
+  }
+
+  _buildCachedStreamEvents(responseBody = {}) {
+    if (!responseBody || typeof responseBody !== 'object') {
+      return []
+    }
+
+    if (responseBody.object === 'chat.completion' || Array.isArray(responseBody.choices)) {
+      return this._buildCachedChatCompletionStreamEvents(responseBody)
+    }
+
+    return this._buildCachedResponsesStreamEvents(responseBody)
+  }
+
+  _buildCachedResponsesStreamEvents(responseBody = {}) {
+    const responseId = responseBody.id || `resp_${Date.now()}`
+    const createdAt =
+      typeof responseBody.created_at === 'string'
+        ? responseBody.created_at
+        : new Date(
+            typeof responseBody.created === 'number' ? responseBody.created * 1000 : Date.now()
+          ).toISOString()
+    const model = responseBody.model || 'unknown'
+    const outputItems = Array.isArray(responseBody.output) ? responseBody.output : []
+    const events = [
+      toSSE({
+        type: 'response.created',
+        response: {
+          id: responseId,
+          object: 'response',
+          created_at: createdAt,
+          status: 'in_progress',
+          model,
+          output: []
+        }
+      })
+    ]
+
+    outputItems.forEach((item, outputIndex) => {
+      if (!item || typeof item !== 'object') {
+        return
+      }
+
+      if (item.type === 'reasoning') {
+        const summaries = Array.isArray(item.summary) ? item.summary : []
+        for (const summary of summaries) {
+          if (summary?.type === 'summary_text' && summary.text) {
+            events.push(
+              toSSE({
+                type: 'response.reasoning_summary_text.delta',
+                delta: summary.text
+              })
+            )
+          }
+        }
+        return
+      }
+
+      if (item.type === 'message') {
+        const contents = Array.isArray(item.content) ? item.content : []
+        contents.forEach((contentItem, contentIndex) => {
+          if (contentItem?.type === 'output_text' && contentItem.text) {
+            events.push(
+              toSSE({
+                type: 'response.output_text.delta',
+                content_index: contentIndex,
+                item_id: item.id,
+                output_index: outputIndex,
+                delta: contentItem.text
+              })
+            )
+
+            events.push(
+              toSSE({
+                type: 'response.output_text.done',
+                content_index: contentIndex,
+                item_id: item.id,
+                output_index: outputIndex,
+                text: contentItem.text,
+                logprobs: contentItem.logprobs || []
+              })
+            )
+          }
+        })
+
+        events.push(
+          toSSE({
+            type: 'response.output_item.done',
+            output_index: outputIndex,
+            item
+          })
+        )
+        return
+      }
+
+      if (item.type === 'function_call') {
+        events.push(
+          toSSE({
+            type: 'response.output_item.added',
+            output_index: outputIndex,
+            item: {
+              type: 'function_call',
+              id: item.id,
+              call_id: item.call_id,
+              name: item.name,
+              arguments: ''
+            }
+          })
+        )
+
+        if (item.arguments) {
+          events.push(
+            toSSE({
+              type: 'response.function_call_arguments.delta',
+              item_id: item.id,
+              output_index: outputIndex,
+              delta: item.arguments
+            })
+          )
+        }
+
+        events.push(
+          toSSE({
+            type: 'response.output_item.done',
+            output_index: outputIndex,
+            item: {
+              type: 'function_call',
+              id: item.id,
+              call_id: item.call_id,
+              name: item.name,
+              arguments: item.arguments || '{}'
+            }
+          })
+        )
+      }
+    })
+
+    events.push(
+      toSSE({
+        type: 'response.completed',
+        response: responseBody
+      })
+    )
+
+    return events
+  }
+
+  _buildCachedChatCompletionStreamEvents(responseBody = {}) {
+    const responseId = responseBody.id || `chatcmpl-${Date.now()}`
+    const created =
+      typeof responseBody.created === 'number'
+        ? responseBody.created
+        : Math.floor(Date.now() / 1000)
+    const model = responseBody.model || 'unknown'
+    const choice = responseBody.choices?.[0] || {}
+    const message = choice.message || {}
+    const events = []
+
+    events.push(
+      toSSE({
+        id: responseId,
+        object: 'chat.completion.chunk',
+        created,
+        model,
+        choices: [
+          {
+            index: 0,
+            delta: {
+              role: message.role || 'assistant'
+            },
+            finish_reason: null
+          }
+        ]
+      })
+    )
+
+    if (message.reasoning_content) {
+      events.push(
+        toSSE({
+          id: responseId,
+          object: 'chat.completion.chunk',
+          created,
+          model,
+          choices: [
+            {
+              index: 0,
+              delta: {
+                reasoning_content: message.reasoning_content
+              },
+              finish_reason: null
+            }
+          ]
+        })
+      )
+    }
+
+    if (message.content) {
+      events.push(
+        toSSE({
+          id: responseId,
+          object: 'chat.completion.chunk',
+          created,
+          model,
+          choices: [
+            {
+              index: 0,
+              delta: {
+                content: message.content
+              },
+              finish_reason: null
+            }
+          ]
+        })
+      )
+    }
+
+    const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : []
+    toolCalls.forEach((toolCall, index) => {
+      events.push(
+        toSSE({
+          id: responseId,
+          object: 'chat.completion.chunk',
+          created,
+          model,
+          choices: [
+            {
+              index: 0,
+              delta: {
+                tool_calls: [
+                  {
+                    index,
+                    id: toolCall.id,
+                    type: toolCall.type || 'function',
+                    function: {
+                      name: toolCall.function?.name,
+                      arguments: toolCall.function?.arguments || '{}'
+                    }
+                  }
+                ]
+              },
+              finish_reason: null
+            }
+          ]
+        })
+      )
+    })
+
+    const finalChunk = {
+      id: responseId,
+      object: 'chat.completion.chunk',
+      created,
+      model,
+      choices: [
+        {
+          index: 0,
+          delta: {},
+          finish_reason: choice.finish_reason || (toolCalls.length > 0 ? 'tool_calls' : 'stop')
+        }
+      ]
+    }
+
+    if (responseBody.usage) {
+      finalChunk.usage = responseBody.usage
+    }
+
+    events.push(toSSE(finalChunk))
+    events.push('data: [DONE]\n\n')
+
+    return events
   }
 
   async _handleStreamResponse(
@@ -800,6 +1191,7 @@ class OpenAIResponsesRelayService {
     req,
     requestMetadata = null,
     responseAdapter = null,
+    streamCacheDecision = null,
     onStreamFinished = null
   ) {
     res.setHeader('Content-Type', 'text/event-stream')
@@ -813,6 +1205,8 @@ class OpenAIResponsesRelayService {
     let rateLimitResetsInSeconds = null
     let streamEnded = false
     let streamFinished = false
+    let finalResponseBody = null
+    const streamCaptureState = this._createResponsesStreamCaptureState()
     const parser = new IncrementalSSEParser()
 
     const finalizeStream = async () => {
@@ -838,7 +1232,10 @@ class OpenAIResponsesRelayService {
         return
       }
 
+      this._captureResponsesStreamEvent(streamCaptureState, eventData)
+
       if (eventData.type === 'response.completed' && eventData.response) {
+        finalResponseBody = eventData.response
         if (eventData.response.model) {
           actualModel = eventData.response.model
           logger.debug(`Captured actual model from response.completed: ${actualModel}`)
@@ -921,6 +1318,12 @@ class OpenAIResponsesRelayService {
         responseAdapter.finalizeStream(writeChunk)
       }
 
+      const cacheableResponseBody =
+        responseAdapter?.getFinalPayload?.() ||
+        this._buildCapturedResponsesPayload(streamCaptureState, finalResponseBody) ||
+        finalResponseBody ||
+        null
+
       if (usageData) {
         try {
           const totalInputTokens = usageData.input_tokens || usageData.prompt_tokens || 0
@@ -990,6 +1393,37 @@ class OpenAIResponsesRelayService {
         )
 
         logger.warn(`Processing rate limit for OpenAI-Responses account ${account.id} from stream`)
+      }
+
+      if (
+        streamCacheDecision &&
+        cacheableResponseBody &&
+        typeof cacheableResponseBody === 'object' &&
+        !cacheableResponseBody.error
+      ) {
+        try {
+          await openaiCacheChainService.storeUpstreamResponse(streamCacheDecision, {
+            statusCode: response.status,
+            body: cacheableResponseBody,
+            headers: response.headers,
+            actualModel:
+              actualModel ||
+              cacheableResponseBody.model ||
+              cacheableResponseBody.response?.model ||
+              requestedModel ||
+              null,
+            usage:
+              usageData ||
+              cacheableResponseBody.usage ||
+              cacheableResponseBody.response?.usage ||
+              null
+          })
+        } catch (error) {
+          logger.warn('Failed to persist OpenAI-Responses stream cache entry', {
+            accountId: account.id,
+            reason: error.message
+          })
+        }
       }
 
       req.removeListener('close', handleClientDisconnect)

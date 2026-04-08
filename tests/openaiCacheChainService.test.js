@@ -1,11 +1,13 @@
 jest.mock('../src/services/cache/openaiL1CacheService', () => ({
   beginRequest: jest.fn(),
+  createCaptureDecision: jest.fn(),
   storeResponse: jest.fn(),
   finalizeRequest: jest.fn(),
   replayCachedResponse: jest.fn()
 }))
 jest.mock('../src/services/cache/openaiL2SemanticCacheService', () => ({
   beginRequest: jest.fn(),
+  createCaptureDecision: jest.fn(),
   storeResponse: jest.fn(),
   extractSemanticText: jest.fn(),
   extractResponseText: jest.fn()
@@ -135,6 +137,112 @@ describe('openaiCacheChainService', () => {
         responseText: 'hello back',
         model: 'gpt-5',
         cacheSource: 'upstream'
+      })
+    )
+  })
+
+  it('prepares capture decisions for stream requests that were bypassed during lookup', async () => {
+    openaiL1CacheService.createCaptureDecision.mockResolvedValue({
+      kind: 'miss',
+      cacheKey: 'stream-l1-key'
+    })
+    openaiL2SemanticCacheService.createCaptureDecision.mockResolvedValue({
+      kind: 'miss',
+      tenantId: 'api-key-1',
+      queryEmbedding: [0.1, 0.2]
+    })
+
+    const result = await openaiCacheChainService.prepareStreamWriteback(
+      {
+        kind: 'bypass',
+        source: 'upstream',
+        l1Decision: {
+          kind: 'bypass',
+          reason: 'stream_request'
+        },
+        l2Decision: {
+          kind: 'bypass',
+          reason: 'stream_request'
+        },
+        cacheContext: {
+          contextFingerprint: 'ctx-1'
+        }
+      },
+      {
+        tenantId: 'api-key-1',
+        endpoint: 'responses',
+        requestBody: {
+          input: 'hello',
+          stream: true
+        }
+      }
+    )
+
+    expect(openaiL1CacheService.createCaptureDecision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tenantId: 'api-key-1',
+        endpoint: 'responses'
+      })
+    )
+    expect(openaiL2SemanticCacheService.createCaptureDecision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tenantId: 'api-key-1',
+        endpoint: 'responses',
+        cacheContext: expect.objectContaining({
+          contextFingerprint: 'ctx-1'
+        })
+      })
+    )
+    expect(result.l1Decision).toEqual(
+      expect.objectContaining({
+        kind: 'miss',
+        cacheKey: 'stream-l1-key'
+      })
+    )
+    expect(result.l2Decision).toEqual(
+      expect.objectContaining({
+        kind: 'miss',
+        tenantId: 'api-key-1'
+      })
+    )
+  })
+
+  it('enables stream lookup on the cache services when replay is supported upstream', async () => {
+    openaiL1CacheService.beginRequest.mockResolvedValue({
+      kind: 'miss',
+      cacheKey: 'l1-stream-key'
+    })
+    openaiL2SemanticCacheService.beginRequest.mockResolvedValue({
+      kind: 'miss',
+      tenantId: 'api-key-1'
+    })
+
+    await openaiCacheChainService.beginRequest({
+      tenantId: 'api-key-1',
+      provider: 'openai-responses',
+      endpoint: 'responses',
+      isStream: true,
+      requestBody: {
+        input: 'hello',
+        stream: true
+      },
+      requestHeaders: {},
+      fullAccount: {
+        baseApi: 'https://relay.example.com',
+        apiKey: 'secret'
+      }
+    })
+
+    expect(openaiL1CacheService.beginRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        isStream: true,
+        allowStreamLookup: true
+      })
+    )
+    expect(openaiL2SemanticCacheService.beginRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        isStream: true,
+        allowStreamLookup: true
       })
     )
   })

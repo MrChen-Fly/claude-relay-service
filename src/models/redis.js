@@ -4156,6 +4156,28 @@ redisClient.incrementOpenAIL1CacheMetric = async function (metricName) {
   }
 }
 
+function normalizeOpenAICacheMetricSuffix(value) {
+  if (typeof value !== 'string') {
+    return ''
+  }
+
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9:_-]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '')
+}
+
+function buildOpenAICacheBypassReasonMetric(reason) {
+  const normalizedReason = normalizeOpenAICacheMetricSuffix(reason)
+  if (!normalizedReason) {
+    return null
+  }
+
+  return `bypass_reason:${normalizedReason}`
+}
+
 function parseOpenAICacheMetricValue(value) {
   const parsed = parseInt(value, 10)
   return Number.isFinite(parsed) ? parsed : 0
@@ -4166,6 +4188,17 @@ function buildOpenAICacheMetricCounters(rawMetrics = {}, metricNames = []) {
     result[metricName] = parseOpenAICacheMetricValue(rawMetrics[metricName])
     return result
   }, {})
+}
+
+function buildOpenAICacheBypassReasons(rawMetrics = {}) {
+  return Object.entries(rawMetrics)
+    .filter(([metricName]) => metricName.startsWith('bypass_reason:'))
+    .map(([metricName, value]) => ({
+      reason: metricName.slice('bypass_reason:'.length),
+      count: parseOpenAICacheMetricValue(value)
+    }))
+    .filter(({ reason, count }) => reason && count > 0)
+    .sort((left, right) => right.count - left.count || left.reason.localeCompare(right.reason))
 }
 
 function calculateOpenAICacheRate(numerator, denominator) {
@@ -4180,6 +4213,7 @@ redisClient.getOpenAICacheMetrics = async function () {
   const defaultMetrics = {
     l1: {
       enabled: config.openaiCache?.enabled !== false,
+      bypassReasons: [],
       counters: {
         cache_hit_exact: 0,
         cache_miss: 0,
@@ -4202,6 +4236,7 @@ redisClient.getOpenAICacheMetrics = async function () {
         typeof config.openaiCache?.l2?.similarityThreshold === 'number'
           ? config.openaiCache.l2.similarityThreshold
           : 0.95,
+      bypassReasons: [],
       counters: {
         cache_hit_semantic: 0,
         cache_shadow_hit: 0,
@@ -4250,6 +4285,8 @@ redisClient.getOpenAICacheMetrics = async function () {
       'embedding_hit',
       'embedding_miss'
     ])
+    const l1BypassReasons = buildOpenAICacheBypassReasons(l1RawMetrics)
+    const l2BypassReasons = buildOpenAICacheBypassReasons(l2RawMetrics)
 
     const l1Lookups = l1Counters.cache_hit_exact + l1Counters.cache_miss
     const l2Lookups =
@@ -4259,6 +4296,7 @@ redisClient.getOpenAICacheMetrics = async function () {
     return {
       l1: {
         ...defaultMetrics.l1,
+        bypassReasons: l1BypassReasons,
         counters: l1Counters,
         totals: {
           lookups: l1Lookups,
@@ -4270,6 +4308,7 @@ redisClient.getOpenAICacheMetrics = async function () {
       },
       l2: {
         ...defaultMetrics.l2,
+        bypassReasons: l2BypassReasons,
         counters: l2Counters,
         totals: {
           lookups: l2Lookups,
@@ -4487,6 +4526,24 @@ redisClient.incrementOpenAIL2CacheMetric = async function (metricName) {
     logger.error(`Failed to increment OpenAI L2 cache metric ${metricName}:`, error)
     return 0
   }
+}
+
+redisClient.incrementOpenAIL1CacheBypassReason = async function (reason) {
+  const metricName = buildOpenAICacheBypassReasonMetric(reason)
+  if (!metricName) {
+    return 0
+  }
+
+  return await this.incrementOpenAIL1CacheMetric(metricName)
+}
+
+redisClient.incrementOpenAIL2CacheBypassReason = async function (reason) {
+  const metricName = buildOpenAICacheBypassReasonMetric(reason)
+  if (!metricName) {
+    return 0
+  }
+
+  return await this.incrementOpenAIL2CacheMetric(metricName)
 }
 
 // 分布式锁相关方法

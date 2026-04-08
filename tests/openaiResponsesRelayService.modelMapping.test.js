@@ -35,14 +35,35 @@ jest.mock('../src/utils/upstreamErrorHelper', () => ({
   parseRetryAfter: jest.fn(),
   sanitizeErrorForClient: jest.fn((errorData) => errorData)
 }))
+jest.mock('../src/services/cache/gptcache/openaiCacheChainService', () => ({
+  beginRequest: jest.fn(),
+  prepareStreamWriteback: jest.fn(async (decision) => decision),
+  storeUpstreamResponse: jest.fn(),
+  finalizeRequest: jest.fn(),
+  replayCachedResponse: jest.fn(),
+  recordCacheReplay: jest.fn()
+}))
 
 const openaiResponsesAccountService = require('../src/services/account/openaiResponsesAccountService')
 const apiKeyService = require('../src/services/apiKeyService')
+const openaiCacheChainService = require('../src/services/cache/gptcache/openaiCacheChainService')
 const openaiResponsesRelayService = require('../src/services/relay/openaiResponsesRelayService')
 
 describe('openaiResponsesRelayService account model mapping integration', () => {
   beforeEach(() => {
     jest.clearAllMocks()
+    openaiCacheChainService.beginRequest.mockResolvedValue({
+      kind: 'bypass',
+      source: 'upstream',
+      l1Decision: {
+        kind: 'bypass',
+        reason: 'cache_disabled'
+      },
+      l2Decision: {
+        kind: 'bypass',
+        reason: 'cache_disabled'
+      }
+    })
   })
 
   afterEach(() => {
@@ -398,6 +419,7 @@ describe('openaiResponsesRelayService account model mapping integration', () => 
       expect.objectContaining({
         convertJson: expect.any(Function)
       }),
+      expect.any(Object),
       expect.any(Function)
     )
   })

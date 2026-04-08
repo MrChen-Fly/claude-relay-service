@@ -6,12 +6,19 @@ const logger = require('../../../utils/logger')
 
 class OpenAICacheChainService {
   async beginRequest(context = {}) {
+    const lookupContext =
+      context.isStream || context.requestBody?.stream
+        ? {
+            ...context,
+            allowStreamLookup: true
+          }
+        : context
     const semanticTextResult = openaiL2SemanticCacheService.extractSemanticText(context.requestBody)
     const semanticRequestText = semanticTextResult.supported ? semanticTextResult.text : ''
     const bufferSnapshot = await contextBufferService.getSnapshot(context)
     const cacheContext = buildCacheContext(context, bufferSnapshot)
 
-    const l1Decision = await openaiL1CacheService.beginRequest(context)
+    const l1Decision = await openaiL1CacheService.beginRequest(lookupContext)
     if (l1Decision.kind === 'hit') {
       return {
         kind: 'hit',
@@ -26,7 +33,7 @@ class OpenAICacheChainService {
     }
 
     const l2Decision = await openaiL2SemanticCacheService.beginRequest({
-      ...context,
+      ...lookupContext,
       cacheContext
     })
     if (l2Decision.kind === 'hit') {
@@ -59,6 +66,12 @@ class OpenAICacheChainService {
   }
 
   async replayCachedResponse(res, decision = {}) {
+    await this.recordCacheReplay(decision)
+
+    return openaiL1CacheService.replayCachedResponse(res, decision.entry)
+  }
+
+  async recordCacheReplay(decision = {}) {
     const responseText = openaiL2SemanticCacheService.extractResponseText(
       decision.entry?.body || {}
     )
@@ -76,8 +89,29 @@ class OpenAICacheChainService {
         })
       }
     }
+  }
 
-    return openaiL1CacheService.replayCachedResponse(res, decision.entry)
+  async prepareStreamWriteback(decision, context = {}) {
+    if (!decision) {
+      return null
+    }
+
+    const nextDecision = {
+      ...decision
+    }
+
+    if (decision.l1Decision?.kind === 'bypass' && decision.l1Decision.reason === 'stream_request') {
+      nextDecision.l1Decision = await openaiL1CacheService.createCaptureDecision(context)
+    }
+
+    if (decision.l2Decision?.kind === 'bypass' && decision.l2Decision.reason === 'stream_request') {
+      nextDecision.l2Decision = await openaiL2SemanticCacheService.createCaptureDecision({
+        ...context,
+        cacheContext: decision.cacheContext
+      })
+    }
+
+    return nextDecision
   }
 
   async storeUpstreamResponse(decision, responseContext = {}) {

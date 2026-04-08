@@ -8,6 +8,7 @@ function createDefaultCacheMetrics() {
   return {
     l1: {
       enabled: true,
+      bypassReasons: [],
       counters: {
         cache_hit_exact: 0,
         cache_miss: 0,
@@ -27,6 +28,7 @@ function createDefaultCacheMetrics() {
       shadowMode: true,
       embeddingModel: 'text-embedding-3-small',
       similarityThreshold: 0.95,
+      bypassReasons: [],
       counters: {
         cache_hit_semantic: 0,
         cache_shadow_hit: 0,

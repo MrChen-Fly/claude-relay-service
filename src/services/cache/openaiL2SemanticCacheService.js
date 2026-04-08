@@ -345,6 +345,16 @@ async function incrementMetric(name) {
   await redis.incrementOpenAIL2CacheMetric(name)
 }
 
+async function incrementBypassMetrics(reason) {
+  await incrementMetric('cache_bypass')
+
+  if (typeof redis.incrementOpenAIL2CacheBypassReason !== 'function' || !reason) {
+    return
+  }
+
+  await redis.incrementOpenAIL2CacheBypassReason(reason)
+}
+
 /**
  * Builds the normalized L2 cache plan for a request.
  *
@@ -375,7 +385,7 @@ function buildCachePlan(context = {}) {
     return { cacheable: false, reason: 'missing_account_credentials' }
   }
 
-  if (context.isStream || context.requestBody?.stream) {
+  if ((context.isStream || context.requestBody?.stream) && !context.allowStreamLookup) {
     return { cacheable: false, reason: 'stream_request' }
   }
 
@@ -440,6 +450,22 @@ function buildCachePlan(context = {}) {
     embeddingKey: buildEmbeddingKey(textHash),
     indexKey: buildIndexKey(context.tenantId),
     contextFingerprint: context.cacheContext?.contextFingerprint || null
+  }
+}
+
+function buildCaptureContext(context = {}) {
+  const requestBody =
+    context.requestBody && typeof context.requestBody === 'object'
+      ? {
+          ...context.requestBody,
+          stream: false
+        }
+      : context.requestBody
+
+  return {
+    ...context,
+    isStream: false,
+    requestBody
   }
 }
 
@@ -515,7 +541,7 @@ async function getOrCreateEmbedding(context, plan) {
 async function beginRequest(context = {}) {
   const plan = buildCachePlan(context)
   if (!plan.cacheable) {
-    await incrementMetric('cache_bypass')
+    await incrementBypassMetrics(plan.reason)
     return { kind: 'bypass', reason: plan.reason }
   }
 
@@ -529,7 +555,7 @@ async function beginRequest(context = {}) {
       model: plan.model,
       reason: error.message
     })
-    await incrementMetric('cache_bypass')
+    await incrementBypassMetrics('embedding_request_failed')
     return { kind: 'bypass', reason: 'embedding_request_failed' }
   }
 
@@ -630,6 +656,32 @@ async function beginRequest(context = {}) {
   }
 }
 
+async function createCaptureDecision(context = {}) {
+  const captureContext = buildCaptureContext(context)
+  const plan = buildCachePlan(captureContext)
+  if (!plan.cacheable) {
+    return { kind: 'bypass', reason: plan.reason }
+  }
+
+  try {
+    const queryEmbedding = await getOrCreateEmbedding(captureContext, plan)
+    return {
+      kind: 'miss',
+      ...plan,
+      queryEmbedding,
+      captureOnly: true
+    }
+  } catch (error) {
+    logger.warn('OpenAI L2 embedding generation failed during stream cache capture', {
+      tenantId: context.tenantId,
+      endpoint: context.endpoint,
+      model: plan.model,
+      reason: error.message
+    })
+    return { kind: 'bypass', reason: 'embedding_request_failed' }
+  }
+}
+
 /**
  * Stores a successful semantic cache entry after upstream success.
  *
@@ -717,6 +769,7 @@ async function storeResponse(decision, responseContext = {}) {
 module.exports = {
   buildCachePlan,
   beginRequest,
+  createCaptureDecision,
   storeResponse,
   extractSemanticText,
   extractResponseText,

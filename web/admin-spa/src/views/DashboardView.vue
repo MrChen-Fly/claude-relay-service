@@ -560,6 +560,70 @@
             </p>
           </div>
         </div>
+
+        <div class="mt-4 grid grid-cols-1 gap-3 xl:grid-cols-2">
+          <div
+            class="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-slate-800 dark:bg-slate-900/40"
+          >
+            <div class="flex items-center justify-between gap-3">
+              <p class="text-sm font-semibold text-gray-800 dark:text-gray-100">L1 Bypass 原因</p>
+              <span class="text-xs text-gray-500 dark:text-gray-400">
+                总计 {{ formatNumber(l1CacheMetrics.counters.cache_bypass) }}
+              </span>
+            </div>
+            <div v-if="l1BypassReasons.length > 0" class="mt-3 space-y-2">
+              <div
+                v-for="item in l1BypassReasons"
+                :key="`l1-${item.reason}`"
+                class="flex items-center justify-between rounded-xl bg-white px-3 py-2 text-sm shadow-sm dark:bg-slate-950/60"
+              >
+                <div class="min-w-0">
+                  <p class="truncate font-medium text-gray-800 dark:text-gray-100">
+                    {{ formatCacheBypassReason(item.reason) }}
+                  </p>
+                  <p class="mt-0.5 truncate text-xs text-gray-400 dark:text-gray-500">
+                    {{ item.reason }}
+                  </p>
+                </div>
+                <span class="ml-3 text-sm font-semibold text-sky-600 dark:text-sky-300">
+                  {{ formatNumber(item.count) }}
+                </span>
+              </div>
+            </div>
+            <p v-else class="mt-3 text-sm text-gray-500 dark:text-gray-400">暂无 bypass 数据</p>
+          </div>
+
+          <div
+            class="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-slate-800 dark:bg-slate-900/40"
+          >
+            <div class="flex items-center justify-between gap-3">
+              <p class="text-sm font-semibold text-gray-800 dark:text-gray-100">L2 Bypass 原因</p>
+              <span class="text-xs text-gray-500 dark:text-gray-400">
+                总计 {{ formatNumber(l2CacheMetrics.counters.cache_bypass) }}
+              </span>
+            </div>
+            <div v-if="l2BypassReasons.length > 0" class="mt-3 space-y-2">
+              <div
+                v-for="item in l2BypassReasons"
+                :key="`l2-${item.reason}`"
+                class="flex items-center justify-between rounded-xl bg-white px-3 py-2 text-sm shadow-sm dark:bg-slate-950/60"
+              >
+                <div class="min-w-0">
+                  <p class="truncate font-medium text-gray-800 dark:text-gray-100">
+                    {{ formatCacheBypassReason(item.reason) }}
+                  </p>
+                  <p class="mt-0.5 truncate text-xs text-gray-400 dark:text-gray-500">
+                    {{ item.reason }}
+                  </p>
+                </div>
+                <span class="ml-3 text-sm font-semibold text-emerald-600 dark:text-emerald-300">
+                  {{ formatNumber(item.count) }}
+                </span>
+              </div>
+            </div>
+            <p v-else class="mt-3 text-sm text-gray-500 dark:text-gray-400">暂无 bypass 数据</p>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -944,6 +1008,7 @@ const accountTrendUpdating = ref(false)
 const emptyCacheMetrics = {
   l1: {
     enabled: true,
+    bypassReasons: [],
     counters: {
       cache_hit_exact: 0,
       cache_miss: 0,
@@ -963,6 +1028,7 @@ const emptyCacheMetrics = {
     shadowMode: true,
     embeddingModel: 'text-embedding-3-small',
     similarityThreshold: 0.95,
+    bypassReasons: [],
     counters: {
       cache_hit_semantic: 0,
       cache_shadow_hit: 0,
@@ -1055,6 +1121,36 @@ const formatSimilarityThreshold = (value) => {
   return Number.isFinite(numericValue) ? numericValue.toFixed(2) : '--'
 }
 
+const cacheBypassReasonLabels = {
+  cache_disabled: '缓存未启用',
+  missing_tenant: '缺少租户标识',
+  stream_request: '流式请求',
+  invalid_request_body: '请求体无效',
+  dynamic_tools: '携带 tools 或动态字段',
+  dynamic_request: '动态请求参数',
+  temperature_too_high: '温度过高',
+  unsupported_endpoint: '当前端点不支持',
+  missing_embedding_base_api: '缺少 Embedding 地址',
+  missing_account_credentials: '缺少 Embedding 凭证',
+  structured_output_request: '结构化输出请求',
+  missing_model: '缺少模型参数',
+  unsupported_content_type: '内容类型不支持',
+  unsupported_content_part: '内容片段不支持',
+  unsupported_input_item: '输入项不支持',
+  unsupported_instructions: 'instructions 不支持',
+  missing_text_input: '缺少可嵌入文本',
+  text_too_long: '文本过长',
+  embedding_request_failed: 'Embedding 请求失败'
+}
+
+const formatCacheBypassReason = (reason) => {
+  if (!reason) {
+    return '未知原因'
+  }
+
+  return cacheBypassReasonLabels[reason] || reason.split('_').filter(Boolean).join(' ')
+}
+
 const formatLastUpdate = (isoString) => {
   if (!isoString) return '未知'
   const date = new Date(isoString)
@@ -1103,6 +1199,8 @@ const chartColors = computed(() => ({
 
 const l1CacheMetrics = computed(() => dashboardData.value.cacheMetrics?.l1 || emptyCacheMetrics.l1)
 const l2CacheMetrics = computed(() => dashboardData.value.cacheMetrics?.l2 || emptyCacheMetrics.l2)
+const l1BypassReasons = computed(() => (l1CacheMetrics.value.bypassReasons || []).slice(0, 4))
+const l2BypassReasons = computed(() => (l2CacheMetrics.value.bypassReasons || []).slice(0, 4))
 const l2PrimaryMetricLabel = computed(() =>
   l2CacheMetrics.value.shadowMode ? 'L2 Shadow 召回率' : 'L2 语义命中率'
 )

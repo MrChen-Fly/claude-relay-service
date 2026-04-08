@@ -3,7 +3,8 @@ jest.mock('../src/models/redis', () => ({
   setOpenAIL1CacheEntry: jest.fn(),
   acquireOpenAIL1CacheLock: jest.fn(),
   releaseOpenAIL1CacheLock: jest.fn(),
-  incrementOpenAIL1CacheMetric: jest.fn()
+  incrementOpenAIL1CacheMetric: jest.fn(),
+  incrementOpenAIL1CacheBypassReason: jest.fn()
 }))
 
 const config = require('../config/config')
@@ -75,6 +76,21 @@ describe('openaiL1CacheService', () => {
     })
   })
 
+  it('allows stream lookups when the caller explicitly opts in to replay support', () => {
+    const plan = openaiL1CacheService.buildCachePlan({
+      ...baseContext,
+      isStream: true,
+      allowStreamLookup: true,
+      requestBody: {
+        ...baseContext.requestBody,
+        stream: true
+      }
+    })
+
+    expect(plan.cacheable).toBe(true)
+    expect(plan.cacheKey).toContain('cache:openai:l1:v1:api-key-1:openai:responses:')
+  })
+
   it('bypasses tool-enabled requests', () => {
     const plan = openaiL1CacheService.buildCachePlan({
       ...baseContext,
@@ -88,6 +104,24 @@ describe('openaiL1CacheService', () => {
       cacheable: false,
       reason: 'dynamic_tools'
     })
+  })
+
+  it('records bypass reason metrics when a request is skipped before lookup', async () => {
+    const result = await openaiL1CacheService.beginRequest({
+      ...baseContext,
+      isStream: true,
+      requestBody: {
+        ...baseContext.requestBody,
+        stream: true
+      }
+    })
+
+    expect(result).toEqual({
+      kind: 'bypass',
+      reason: 'stream_request'
+    })
+    expect(redis.incrementOpenAIL1CacheMetric).toHaveBeenCalledWith('cache_bypass')
+    expect(redis.incrementOpenAIL1CacheBypassReason).toHaveBeenCalledWith('stream_request')
   })
 
   it('returns a cache hit when Redis already has the response', async () => {
@@ -136,6 +170,26 @@ describe('openaiL1CacheService', () => {
     expect(result.lockAcquired).toBe(true)
     expect(result.cacheKey).toContain('cache:openai:l1:v1:api-key-1:openai:responses:')
     expect(redis.incrementOpenAIL1CacheMetric).toHaveBeenCalledWith('cache_miss')
+  })
+
+  it('builds a capture decision for stream responses without acquiring a lock', async () => {
+    const result = await openaiL1CacheService.createCaptureDecision({
+      ...baseContext,
+      isStream: true,
+      requestBody: {
+        ...baseContext.requestBody,
+        stream: true
+      }
+    })
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        kind: 'miss',
+        lockAcquired: false,
+        captureOnly: true
+      })
+    )
+    expect(result.cacheKey).toContain('cache:openai:l1:v1:api-key-1:openai:responses:')
   })
 
   it('stores successful non-stream responses with endpoint-specific ttl', async () => {

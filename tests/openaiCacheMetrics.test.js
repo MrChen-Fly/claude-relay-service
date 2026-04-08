@@ -20,7 +20,9 @@ describe('redis.getOpenAICacheMetrics', () => {
         cache_hit_exact: '12',
         cache_miss: '8',
         cache_bypass: '3',
-        cache_write: '7'
+        cache_write: '7',
+        'bypass_reason:stream_request': '2',
+        'bypass_reason:dynamic_tools': '1'
       })
       .mockResolvedValueOnce({
         cache_hit_semantic: '4',
@@ -29,7 +31,9 @@ describe('redis.getOpenAICacheMetrics', () => {
         cache_bypass: '2',
         cache_write: '5',
         embedding_hit: '9',
-        embedding_miss: '3'
+        embedding_miss: '3',
+        'bypass_reason:stream_request': '1',
+        'bypass_reason:structured_output_request': '1'
       })
 
     redis.getClient = jest.fn(() => ({ hgetall }))
@@ -41,6 +45,10 @@ describe('redis.getOpenAICacheMetrics', () => {
     expect(metrics).toEqual({
       l1: {
         enabled: true,
+        bypassReasons: [
+          { reason: 'stream_request', count: 2 },
+          { reason: 'dynamic_tools', count: 1 }
+        ],
         counters: {
           cache_hit_exact: 12,
           cache_miss: 8,
@@ -60,6 +68,10 @@ describe('redis.getOpenAICacheMetrics', () => {
         shadowMode: true,
         embeddingModel: 'BAAI/bge-m3',
         similarityThreshold: 0.95,
+        bypassReasons: [
+          { reason: 'stream_request', count: 1 },
+          { reason: 'structured_output_request', count: 1 }
+        ],
         counters: {
           cache_hit_semantic: 4,
           cache_shadow_hit: 6,
@@ -89,7 +101,9 @@ describe('redis.getOpenAICacheMetrics', () => {
     const metrics = await redis.getOpenAICacheMetrics()
 
     expect(metrics.l1.counters.cache_hit_exact).toBe(0)
+    expect(metrics.l1.bypassReasons).toEqual([])
     expect(metrics.l2.counters.cache_hit_semantic).toBe(0)
+    expect(metrics.l2.bypassReasons).toEqual([])
     expect(metrics.l2.enabled).toBe(true)
   })
 })

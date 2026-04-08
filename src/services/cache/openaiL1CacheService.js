@@ -170,6 +170,16 @@ async function incrementMetric(name) {
   await redis.incrementOpenAIL1CacheMetric(name)
 }
 
+async function incrementBypassMetrics(reason) {
+  await incrementMetric('cache_bypass')
+
+  if (typeof redis.incrementOpenAIL1CacheBypassReason !== 'function' || !reason) {
+    return
+  }
+
+  await redis.incrementOpenAIL1CacheBypassReason(reason)
+}
+
 /**
  * Builds the normalized cache plan for a request.
  *
@@ -187,7 +197,7 @@ function buildCachePlan(context = {}) {
     return { cacheable: false, reason: 'missing_tenant' }
   }
 
-  if (context.isStream || context.requestBody?.stream) {
+  if ((context.isStream || context.requestBody?.stream) && !context.allowStreamLookup) {
     return { cacheable: false, reason: 'stream_request' }
   }
 
@@ -233,6 +243,22 @@ function buildCachePlan(context = {}) {
   }
 }
 
+function buildCaptureContext(context = {}) {
+  const requestBody =
+    context.requestBody && typeof context.requestBody === 'object'
+      ? {
+          ...context.requestBody,
+          stream: false
+        }
+      : context.requestBody
+
+  return {
+    ...context,
+    isStream: false,
+    requestBody
+  }
+}
+
 async function waitForFill(plan) {
   const deadline = Date.now() + plan.waitTimeoutMs
 
@@ -256,7 +282,7 @@ async function waitForFill(plan) {
 async function beginRequest(context = {}) {
   const plan = buildCachePlan(context)
   if (!plan.cacheable) {
-    await incrementMetric('cache_bypass')
+    await incrementBypassMetrics(plan.reason)
     return { kind: 'bypass', reason: plan.reason }
   }
 
@@ -282,6 +308,21 @@ async function beginRequest(context = {}) {
     ...plan,
     lockAcquired,
     lockValue
+  }
+}
+
+async function createCaptureDecision(context = {}) {
+  const plan = buildCachePlan(buildCaptureContext(context))
+  if (!plan.cacheable) {
+    return { kind: 'bypass', reason: plan.reason }
+  }
+
+  return {
+    kind: 'miss',
+    ...plan,
+    lockAcquired: false,
+    lockValue: null,
+    captureOnly: true
   }
 }
 
@@ -359,6 +400,7 @@ function replayCachedResponse(res, entry = {}) {
 module.exports = {
   buildCachePlan,
   beginRequest,
+  createCaptureDecision,
   storeResponse,
   finalizeRequest,
   replayCachedResponse

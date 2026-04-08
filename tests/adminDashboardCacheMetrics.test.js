@@ -108,6 +108,7 @@ describe('admin dashboard cache metrics', () => {
     redis.getOpenAICacheMetrics.mockResolvedValue({
       l1: {
         enabled: true,
+        bypassReasons: [{ reason: 'stream_request', count: 1 }],
         counters: {
           cache_hit_exact: 5,
           cache_miss: 5,
@@ -127,6 +128,7 @@ describe('admin dashboard cache metrics', () => {
         shadowMode: true,
         embeddingModel: 'BAAI/bge-m3',
         similarityThreshold: 0.95,
+        bypassReasons: [{ reason: 'structured_output_request', count: 2 }],
         counters: {
           cache_hit_semantic: 0,
           cache_shadow_hit: 3,
@@ -168,12 +170,14 @@ describe('admin dashboard cache metrics', () => {
     expect(response.body.data.cacheMetrics).toEqual(
       expect.objectContaining({
         l1: expect.objectContaining({
+          bypassReasons: [{ reason: 'stream_request', count: 1 }],
           rates: expect.objectContaining({
             hitRate: 0.5
           })
         }),
         l2: expect.objectContaining({
           shadowMode: true,
+          bypassReasons: [{ reason: 'structured_output_request', count: 2 }],
           rates: expect.objectContaining({
             shadowHitRate: 0.3,
             embeddingHitRate: 0.8

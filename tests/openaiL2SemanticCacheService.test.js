@@ -10,7 +10,8 @@ jest.mock('../src/models/redis', () => ({
   setOpenAIL2Entry: jest.fn(),
   addOpenAIL2IndexEntry: jest.fn(),
   getOpenAIL2CandidateKeys: jest.fn(),
-  incrementOpenAIL2CacheMetric: jest.fn()
+  incrementOpenAIL2CacheMetric: jest.fn(),
+  incrementOpenAIL2CacheBypassReason: jest.fn()
 }))
 jest.mock('../src/utils/logger', () => ({
   debug: jest.fn(),
@@ -113,6 +114,42 @@ describe('openaiL2SemanticCacheService', () => {
     })
   })
 
+  it('records bypass reason metrics when semantic cache skips a request', async () => {
+    const result = await openaiL2SemanticCacheService.beginRequest({
+      ...baseContext,
+      isStream: true,
+      requestBody: {
+        ...baseContext.requestBody,
+        stream: true
+      }
+    })
+
+    expect(result).toEqual({
+      kind: 'bypass',
+      reason: 'stream_request'
+    })
+    expect(redis.incrementOpenAIL2CacheMetric).toHaveBeenCalledWith('cache_bypass')
+    expect(redis.incrementOpenAIL2CacheBypassReason).toHaveBeenCalledWith('stream_request')
+  })
+
+  it('allows semantic lookup for stream requests when replay support is enabled', () => {
+    config.openaiCache.l2.embeddingBaseUrl = 'https://api.siliconflow.cn/v1'
+    config.openaiCache.l2.embeddingApiKey = 'silicon-key'
+
+    const plan = openaiL2SemanticCacheService.buildCachePlan({
+      ...baseContext,
+      isStream: true,
+      allowStreamLookup: true,
+      requestBody: {
+        ...baseContext.requestBody,
+        stream: true
+      }
+    })
+
+    expect(plan.cacheable).toBe(true)
+    expect(plan.queryText).toContain('user: hello world')
+  })
+
   it('returns a shadow hit when the best candidate exceeds the similarity threshold', async () => {
     const plan = openaiL2SemanticCacheService.buildCachePlan(baseContext)
 
@@ -176,6 +213,30 @@ describe('openaiL2SemanticCacheService', () => {
       })
     )
     expect(redis.setOpenAIL2Embedding).toHaveBeenCalled()
+  })
+
+  it('builds a capture decision for stream responses and precomputes embeddings', async () => {
+    redis.getOpenAIL2Embedding.mockResolvedValue({
+      vector: [0.12, 0.34]
+    })
+
+    const result = await openaiL2SemanticCacheService.createCaptureDecision({
+      ...baseContext,
+      isStream: true,
+      requestBody: {
+        ...baseContext.requestBody,
+        stream: true
+      }
+    })
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        kind: 'miss',
+        captureOnly: true,
+        queryEmbedding: [0.12, 0.34]
+      })
+    )
+    expect(redis.incrementOpenAIL2CacheMetric).toHaveBeenCalledWith('embedding_hit')
   })
 
   it('stores successful upstream responses into L2 entry and index', async () => {
