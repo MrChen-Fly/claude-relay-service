@@ -184,4 +184,63 @@ describe('admin system logs route', () => {
     expect(response.text).toContain('service booted')
     expect(response.text).toContain('cache warmup failed')
   })
+
+  it('supports legacy service log filenames in the system logs panel', async () => {
+    fs.rmSync(path.join(mockLogDir, 'claude-relay-2026-04-09.log'), { force: true })
+    fs.rmSync(path.join(mockLogDir, 'claude-relay-error-2026-04-09.log'), { force: true })
+
+    fs.writeFileSync(
+      path.join(mockLogDir, 'service.log'),
+      [
+        JSON.stringify({
+          ts: '2026-04-09 10:03:00',
+          lvl: 'info',
+          msg: 'legacy service booted',
+          type: 'startup'
+        }),
+        JSON.stringify({
+          ts: '2026-04-09 10:04:00',
+          lvl: 'warn',
+          msg: 'legacy service warning',
+          type: 'runtime'
+        })
+      ].join('\n'),
+      'utf8'
+    )
+
+    fs.writeFileSync(
+      path.join(mockLogDir, 'service-error.log'),
+      JSON.stringify({
+        ts: '2026-04-09 10:05:00',
+        lvl: 'error',
+        msg: 'legacy fatal error'
+      }),
+      'utf8'
+    )
+
+    const app = buildApp()
+    const response = await request(app).get('/admin/system-logs?limit=50')
+
+    expect(response.status).toBe(200)
+    expect(response.body.success).toBe(true)
+    expect(response.body.data.selectedFile).toBe('service.log')
+    expect(response.body.data.files).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'service.log',
+          kind: 'application'
+        }),
+        expect.objectContaining({
+          name: 'service-error.log',
+          kind: 'error'
+        })
+      ])
+    )
+    expect(response.body.data.entries[0]).toEqual(
+      expect.objectContaining({
+        level: 'warn',
+        message: 'legacy service warning'
+      })
+    )
+  })
 })

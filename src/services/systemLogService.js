@@ -10,6 +10,8 @@ const LOG_FILE_RULES = [
   { pattern: /^claude-relay-\d{4}-\d{2}-\d{2}\.log$/, kind: 'application' },
   { pattern: /^claude-relay-error-\d{4}-\d{2}-\d{2}\.log$/, kind: 'error' },
   { pattern: /^claude-relay-security-\d{4}-\d{2}-\d{2}\.log$/, kind: 'security' },
+  { pattern: /^service\.log$/, kind: 'application' },
+  { pattern: /^service-error\.log$/, kind: 'error' },
   { pattern: /^exceptions\.log$/, kind: 'exceptions' },
   { pattern: /^rejections\.log$/, kind: 'rejections' }
 ]
@@ -103,7 +105,8 @@ function matchesFilters(entry, level, searchTerm) {
     return true
   }
 
-  const haystack = `${entry.message}\n${entry.raw}\n${JSON.stringify(entry.metadata || {})}`.toLowerCase()
+  const haystack =
+    `${entry.message}\n${entry.raw}\n${JSON.stringify(entry.metadata || {})}`.toLowerCase()
   return haystack.includes(searchTerm)
 }
 
@@ -249,7 +252,9 @@ async function getSystemLogs(options = {}) {
   const selectedFile = resolveSelectedFile(files, options.file)
   const limit = normalizeLimit(options.limit)
   const level = normalizeLevel(options.level)
-  const search = String(options.search || '').trim().toLowerCase()
+  const search = String(options.search || '')
+    .trim()
+    .toLowerCase()
 
   if (!selectedFile) {
     return {
