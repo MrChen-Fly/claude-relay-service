@@ -104,12 +104,19 @@ function extractUserTextsFromCanonicalRequest(requestText = '') {
     return []
   }
 
-  return requestText
+  const userTexts = requestText
     .split(/\r?\n/u)
     .map((line) => normalizeText(line))
     .filter((line) => line.toLowerCase().startsWith('user:'))
     .map((line) => normalizeText(line.slice(5)))
     .filter(Boolean)
+
+  if (userTexts.length > 0) {
+    return userTexts
+  }
+
+  const fallbackText = normalizeText(requestText)
+  return fallbackText ? [fallbackText] : []
 }
 
 function buildSemanticQueryText(canonicalPrompt = {}, options = {}) {

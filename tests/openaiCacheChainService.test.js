@@ -105,6 +105,42 @@ describe('openaiCacheChainService', () => {
     expect(openaiL3GlobalCacheService.beginRequest).not.toHaveBeenCalled()
   })
 
+  it('stores condensed semantic text for long-context requests when focal text is available', async () => {
+    openaiL2SemanticCacheService.extractSemanticText.mockReturnValue({
+      supported: true,
+      text: 'system: long context\nuser: continue optimizing cache hit rate',
+      focalText: 'continue optimizing cache hit rate'
+    })
+    openaiL1CacheService.beginRequest.mockResolvedValue({
+      kind: 'miss',
+      cacheKey: 'l1-key-1'
+    })
+    openaiL2SemanticCacheService.beginRequest.mockResolvedValue({
+      kind: 'miss',
+      tenantId: 'api-key-1'
+    })
+    openaiL3GlobalCacheService.beginRequest.mockResolvedValue({
+      kind: 'miss',
+      cacheKey: 'l3-key-1'
+    })
+
+    const result = await openaiCacheChainService.beginRequest({
+      tenantId: 'api-key-1',
+      provider: 'openai-responses',
+      endpoint: 'responses',
+      requestBody: {
+        input: 'continue'
+      },
+      requestHeaders: {},
+      fullAccount: {
+        baseApi: 'https://relay.example.com',
+        apiKey: 'secret'
+      }
+    })
+
+    expect(result.semanticRequestText).toBe('continue optimizing cache hit rate')
+  })
+
   it('backfills L1 and L2 when L3 returns a global cache hit', async () => {
     openaiL1CacheService.beginRequest.mockResolvedValue({
       kind: 'miss',

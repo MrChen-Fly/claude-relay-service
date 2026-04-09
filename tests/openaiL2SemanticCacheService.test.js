@@ -102,6 +102,50 @@ describe('openaiL2SemanticCacheService', () => {
     expect(plan.embeddingKey).toContain('cache:openai:l2:embed:v1:')
   })
 
+  it('keeps long prompt-cached conversations cacheable when the semantic query stays short', () => {
+    const longInstructions = 'Long cached conversation context. '.repeat(500)
+    const plan = openaiL2SemanticCacheService.buildCachePlan({
+      ...baseContext,
+      requestBody: {
+        ...baseContext.requestBody,
+        instructions: longInstructions,
+        input: [
+          {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'continue optimizing cache hit rate' }]
+          }
+        ]
+      }
+    })
+
+    expect(plan.cacheable).toBe(true)
+    expect(plan.requestText.length).toBeGreaterThan(config.openaiCache.l2.maxTextLength)
+    expect(plan.queryText).toBe('continue optimizing cache hit rate')
+  })
+
+  it('still bypasses requests when the semantic query itself exceeds the text limit', () => {
+    const plan = openaiL2SemanticCacheService.buildCachePlan({
+      ...baseContext,
+      requestBody: {
+        ...baseContext.requestBody,
+        instructions: undefined,
+        input: [
+          {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'x'.repeat(12050) }]
+          }
+        ]
+      }
+    })
+
+    expect(plan).toEqual({
+      cacheable: false,
+      reason: 'text_too_long'
+    })
+  })
+
   it('supports responses message items without an explicit type field', () => {
     const plan = openaiL2SemanticCacheService.buildCachePlan({
       ...baseContext,

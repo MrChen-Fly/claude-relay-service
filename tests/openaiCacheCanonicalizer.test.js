@@ -1,7 +1,8 @@
 const {
   buildCacheBypassSummary,
   buildCanonicalPrompt,
-  buildToolProfile
+  buildToolProfile,
+  extractUserTextsFromCanonicalRequest
 } = require('../src/services/cache/openaiCacheCanonicalizer')
 
 describe('openaiCacheCanonicalizer buildCacheBypassSummary', () => {
@@ -208,5 +209,10 @@ describe('openaiCacheCanonicalizer buildCacheBypassSummary', () => {
     expect(canonicalPrompt.text).toContain('tool: custom_tool_call_output Success')
     expect(canonicalPrompt.text).not.toContain('internal reasoning')
     expect(canonicalPrompt.focalText).toBe('继续')
+  })
+  it('falls back to plain semantic text when context buffer entries are not canonical prompt lines', () => {
+    expect(extractUserTextsFromCanonicalRequest('continue optimizing cache hit rate')).toEqual([
+      'continue optimizing cache hit rate'
+    ])
   })
 })

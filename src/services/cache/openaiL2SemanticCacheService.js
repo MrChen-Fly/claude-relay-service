@@ -192,13 +192,14 @@ function extractSemanticText(requestBody = {}, options = {}) {
 
   const rawFocalText = result.focalText || result.text
   const enrichedFocalText = buildSemanticQueryText(result, options) || rawFocalText
+  const semanticLookupText = normalizeText(enrichedFocalText || rawFocalText || result.text)
 
   return {
     supported: true,
     text: result.text,
     rawFocalText,
-    focalText: enrichedFocalText,
-    wasFollowUpEnriched: enrichedFocalText !== rawFocalText
+    focalText: semanticLookupText,
+    wasFollowUpEnriched: semanticLookupText !== normalizeText(rawFocalText)
   }
 }
 
@@ -366,7 +367,10 @@ function buildCachePlan(context = {}) {
     return { cacheable: false, reason: semanticText.reason }
   }
 
-  if (semanticText.text.length > settings.maxTextLength) {
+  // Guard the semantic lookup payload, not the full canonical prompt. Long
+  // prompt-cached conversations usually keep the latest user turn short enough
+  // for semantic lookup even when the full upstream request is very large.
+  if (semanticText.focalText.length > settings.maxTextLength) {
     return { cacheable: false, reason: 'text_too_long' }
   }
 

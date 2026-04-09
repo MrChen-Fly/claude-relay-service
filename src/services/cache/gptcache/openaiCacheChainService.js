@@ -22,7 +22,9 @@ class OpenAICacheChainService {
         cacheContext
       }
     )
-    const semanticRequestText = semanticTextResult.supported ? semanticTextResult.text : ''
+    const semanticRequestText = semanticTextResult.supported
+      ? semanticTextResult.focalText || semanticTextResult.text || ''
+      : ''
 
     const l1Decision = await openaiL1CacheService.beginRequest(lookupContext)
     if (l1Decision.kind === 'hit') {
