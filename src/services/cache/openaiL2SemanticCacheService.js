@@ -9,6 +9,8 @@ const { rankCandidates, cosineSimilarity } = require('./gptcache/similarityEvalu
 const {
   normalizeText,
   buildCanonicalPrompt,
+  buildSemanticQueryText,
+  buildRecallTokens,
   buildToolProfile,
   getAlwaysDynamicRequestReason,
   isStructuredOutputRequest
@@ -37,6 +39,10 @@ function getSettings() {
     embeddingTtlSeconds: config.openaiCache?.l2?.embeddingTtlSeconds || 2592000,
     maxCandidates: config.openaiCache?.l2?.maxCandidates || 20,
     maxIndexedEntries: config.openaiCache?.l2?.maxIndexedEntries || 200,
+    recallTokenLimit: config.openaiCache?.l2?.recallTokenLimit || 6,
+    recallPerTokenLimit: config.openaiCache?.l2?.recallPerTokenLimit || 12,
+    recallRecentLimit: config.openaiCache?.l2?.recallRecentLimit || 20,
+    recallTotalLimit: config.openaiCache?.l2?.recallTotalLimit || 60,
     maxTextLength: config.openaiCache?.l2?.maxTextLength || 12000,
     rankAcceptanceThreshold:
       typeof config.openaiCache?.l2?.rankAcceptanceThreshold === 'number'
@@ -93,6 +99,27 @@ function buildEntryKey(tenantId, entryId) {
 
 function buildIndexKey(tenantId) {
   return `cache:openai:l2:index:${CACHE_VERSION}:${tenantId}`
+}
+
+function buildRecallScopeHash(plan = {}) {
+  return createHash({
+    provider: plan.provider || 'openai-responses',
+    model: plan.model || null,
+    embeddingSource: plan.embeddingSource || null,
+    toolSignature: plan.toolSignature || null,
+    toolChoiceMode: plan.toolChoiceMode || 'auto',
+    parallelToolCalls: plan.parallelToolCalls ?? null
+  })
+}
+
+function buildRecallShardKey(tenantId, recallScopeHash, token) {
+  return `cache:openai:l2:recall:${CACHE_VERSION}:${tenantId}:${recallScopeHash}:${createHash(
+    token
+  ).slice(0, 16)}`
+}
+
+function buildRecallShardKeys(tenantId, recallScopeHash, recallTokens = []) {
+  return recallTokens.map((token) => buildRecallShardKey(tenantId, recallScopeHash, token))
 }
 
 /**
@@ -153,7 +180,7 @@ function pickReplayHeaders(headers = {}) {
   return normalized
 }
 
-function extractSemanticText(requestBody = {}) {
+function extractSemanticText(requestBody = {}, options = {}) {
   const result = buildCanonicalPrompt(requestBody, {
     semanticMode: true
   })
@@ -162,10 +189,15 @@ function extractSemanticText(requestBody = {}) {
     return result
   }
 
+  const rawFocalText = result.focalText || result.text
+  const enrichedFocalText = buildSemanticQueryText(result, options) || rawFocalText
+
   return {
     supported: true,
     text: result.text,
-    focalText: result.focalText || result.text
+    rawFocalText,
+    focalText: enrichedFocalText,
+    wasFollowUpEnriched: enrichedFocalText !== rawFocalText
   }
 }
 
@@ -326,7 +358,9 @@ function buildCachePlan(context = {}) {
     return { cacheable: false, reason: 'missing_model' }
   }
 
-  const semanticText = extractSemanticText(context.requestBody)
+  const semanticText = extractSemanticText(context.requestBody, {
+    cacheContext: context.cacheContext
+  })
   if (!semanticText.supported) {
     return { cacheable: false, reason: semanticText.reason }
   }
@@ -336,6 +370,19 @@ function buildCachePlan(context = {}) {
   }
 
   const embeddingSource = buildEmbeddingSource(embeddingTarget, settings.embeddingModel)
+  const provider = context.provider || 'openai-responses'
+  const toolSignature = toolProfile.hasTools ? createHash(toolProfile.tools) : null
+  const recallTokens = buildRecallTokens(semanticText.focalText, {
+    limit: settings.recallTokenLimit
+  })
+  const recallScopeHash = buildRecallScopeHash({
+    provider,
+    model,
+    embeddingSource,
+    toolSignature,
+    toolChoiceMode: toolProfile.choiceMode,
+    parallelToolCalls: toolProfile.parallelToolCalls
+  })
   const textHash = createHash({
     embeddingSource,
     text: semanticText.focalText
@@ -346,7 +393,7 @@ function buildCachePlan(context = {}) {
     tenantId: context.tenantId,
     endpoint: context.endpoint,
     model,
-    provider: context.provider || 'openai-responses',
+    provider,
     embeddingSource,
     embeddingBaseUrl: embeddingTarget.baseApi,
     embeddingApiKey: embeddingTarget.apiKey,
@@ -358,13 +405,22 @@ function buildCachePlan(context = {}) {
     embeddingTtlSeconds: settings.embeddingTtlSeconds,
     maxCandidates: settings.maxCandidates,
     maxIndexedEntries: settings.maxIndexedEntries,
+    recallTokenLimit: settings.recallTokenLimit,
+    recallPerTokenLimit: settings.recallPerTokenLimit,
+    recallRecentLimit: settings.recallRecentLimit,
+    recallTotalLimit: settings.recallTotalLimit,
     rankAcceptanceThreshold: settings.rankAcceptanceThreshold,
+    rawQueryText: semanticText.rawFocalText,
     queryText: semanticText.focalText,
     requestText: semanticText.text,
+    followUpEnriched: semanticText.wasFollowUpEnriched,
     requestHasTools: toolProfile.hasTools,
     toolChoiceMode: toolProfile.choiceMode,
     parallelToolCalls: toolProfile.parallelToolCalls,
-    toolSignature: toolProfile.hasTools ? createHash(toolProfile.tools) : null,
+    toolSignature,
+    recallTokens,
+    recallScopeHash,
+    recallShardKeys: buildRecallShardKeys(context.tenantId, recallScopeHash, recallTokens),
     textHash,
     embeddingKey: buildEmbeddingKey(textHash),
     indexKey: buildIndexKey(context.tenantId),
@@ -452,6 +508,42 @@ async function getOrCreateEmbedding(context, plan) {
 }
 
 /**
+ * Reads L2 candidates and normalizes hybrid recall stats for observability.
+ *
+ * @param {Object} plan - Cache lookup plan.
+ * @returns {Promise<{keys: string[], recallStats: Object|null}>} Candidate keys and recall stats.
+ */
+async function getCandidateKeys(plan) {
+  if (typeof redis.getOpenAIL2HybridCandidateKeys === 'function') {
+    const result = await redis.getOpenAIL2HybridCandidateKeys(plan.indexKey, plan.recallShardKeys || [], {
+      recentLimit: plan.recallRecentLimit,
+      perShardLimit: plan.recallPerTokenLimit,
+      totalLimit: plan.recallTotalLimit
+    })
+
+    if (Array.isArray(result)) {
+      return {
+        keys: result,
+        recallStats: null
+      }
+    }
+
+    return {
+      keys: Array.isArray(result?.keys) ? result.keys : [],
+      recallStats: result?.stats || null
+    }
+  }
+
+  return {
+    keys: await redis.getOpenAIL2CandidateKeys(
+      plan.indexKey,
+      Math.max(plan.maxCandidates, plan.recallRecentLimit || plan.maxCandidates)
+    ),
+    recallStats: null
+  }
+}
+
+/**
  * Resolves whether a request should bypass, miss, or hit L2 cache.
  *
  * @param {Object} context - Request cache context.
@@ -462,6 +554,10 @@ async function beginRequest(context = {}) {
   if (!plan.cacheable) {
     await incrementBypassMetrics(plan.reason)
     return { kind: 'bypass', reason: plan.reason }
+  }
+
+  if (plan.followUpEnriched) {
+    await incrementMetric('followup_enriched')
   }
 
   let queryEmbedding
@@ -478,7 +574,19 @@ async function beginRequest(context = {}) {
     return { kind: 'bypass', reason: 'embedding_request_failed' }
   }
 
-  const candidateKeys = await redis.getOpenAIL2CandidateKeys(plan.indexKey, plan.maxCandidates)
+  const candidateResult = await getCandidateKeys(plan)
+  const candidateKeys = Array.isArray(candidateResult?.keys) ? candidateResult.keys : []
+  const recallStats = candidateResult?.recallStats || null
+
+  if (recallStats?.shardLookups > 0) {
+    await incrementMetric('recall_lookup')
+    if ((recallStats.shardHits || 0) > 0) {
+      await incrementMetric('recall_shard_hit')
+    } else {
+      await incrementMetric('recall_shard_miss')
+    }
+  }
+
   if (!candidateKeys.length) {
     await incrementMetric('cache_miss')
     return { kind: 'miss', ...plan, queryEmbedding }
@@ -647,6 +755,8 @@ async function storeResponse(decision, responseContext = {}) {
     toolSignature: decision.toolSignature || null,
     toolChoiceMode: decision.toolChoiceMode || 'auto',
     parallelToolCalls: decision.parallelToolCalls ?? null,
+    recallScopeHash: decision.recallScopeHash || null,
+    recallTokens: decision.recallTokens || [],
     cachedResponse,
     meta: {
       cacheVersion: CACHE_VERSION,
@@ -677,6 +787,19 @@ async function storeResponse(decision, responseContext = {}) {
     decision.entryTtlSeconds,
     decision.maxIndexedEntries
   )
+  if (
+    Array.isArray(decision.recallShardKeys) &&
+    decision.recallShardKeys.length > 0 &&
+    typeof redis.addOpenAIL2ShardIndexEntries === 'function'
+  ) {
+    await redis.addOpenAIL2ShardIndexEntries(
+      decision.recallShardKeys,
+      entryKey,
+      Date.now(),
+      decision.entryTtlSeconds,
+      decision.maxIndexedEntries
+    )
+  }
   await incrementMetric('cache_write')
 
   return { stored: true, entryKey }

@@ -14,10 +14,15 @@ class OpenAICacheChainService {
             allowStreamLookup: true
           }
         : context
-    const semanticTextResult = openaiL2SemanticCacheService.extractSemanticText(context.requestBody)
-    const semanticRequestText = semanticTextResult.supported ? semanticTextResult.text : ''
     const bufferSnapshot = await contextBufferService.getSnapshot(context)
     const cacheContext = buildCacheContext(context, bufferSnapshot)
+    const semanticTextResult = openaiL2SemanticCacheService.extractSemanticText(
+      context.requestBody,
+      {
+        cacheContext
+      }
+    )
+    const semanticRequestText = semanticTextResult.supported ? semanticTextResult.text : ''
 
     const l1Decision = await openaiL1CacheService.beginRequest(lookupContext)
     if (l1Decision.kind === 'hit') {

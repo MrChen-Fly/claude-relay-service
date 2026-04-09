@@ -349,3 +349,5 @@ export const getClaudeCodeVersionApi = () =>
   request({ url: '/admin/claude-code-version', method: 'GET' })
 export const clearClaudeCodeVersionApi = () =>
   request({ url: '/admin/claude-code-version/clear', method: 'POST' })
+export const getSystemLogsApi = (params, config) =>
+  request({ url: '/admin/system-logs', method: 'GET', params, ...config })

@@ -133,8 +133,13 @@ describe('admin dashboard cache metrics', () => {
           cache_miss: 7,
           cache_bypass: 2,
           cache_write: 3,
+          cache_reject_ranked: 2,
           embedding_hit: 4,
-          embedding_miss: 1
+          embedding_miss: 1,
+          followup_enriched: 2,
+          recall_lookup: 3,
+          recall_shard_hit: 1,
+          recall_shard_miss: 2
         },
         totals: {
           lookups: 10,
@@ -143,8 +148,52 @@ describe('admin dashboard cache metrics', () => {
         },
         rates: {
           semanticHitRate: 0.3,
-          embeddingHitRate: 0.8
-        }
+          embeddingHitRate: 0.8,
+          rankedRejectRate: 0.2,
+          followUpEnrichmentRate: 0.2,
+          recallShardHitRate: 0.3333
+        },
+        configSnapshot: {
+          embeddingModel: 'BAAI/bge-m3',
+          similarityThreshold: 0.95,
+          rankAcceptanceThreshold: 0.9,
+          recallTokenLimit: 6,
+          recallPerTokenLimit: 12,
+          recallRecentLimit: 20,
+          recallTotalLimit: 60,
+          maxCandidates: 20,
+          maxIndexedEntries: 200,
+          entryTtlSeconds: 604800,
+          embeddingTtlSeconds: 2592000,
+          contextBufferEnabled: true,
+          contextBufferMaxItems: 6,
+          contextBufferTtlSeconds: 604800
+        },
+        diagnostics: {
+          sampleSize: 10,
+          tuningReadiness: 'low',
+          primaryIssue: 'threshold',
+          message: '候选已经能召回，但较多结果卡在相似度或 rerank 接受线。',
+          rankedRejectRate: 0.2,
+          followUpEnrichmentRate: 0.2,
+          recallShardHitRate: 0.3333,
+          recallShardMissRate: 0.6667
+        },
+        recommendations: [
+          {
+            id: 'relax_similarity_threshold',
+            priority: 'high',
+            title: '适度放宽 L2 接受线',
+            summary: '召回后被 rerank 拒绝的比例偏高。',
+            params: [
+              'OPENAI_L2_CACHE_SIMILARITY_THRESHOLD',
+              'OPENAI_L2_CACHE_RANK_ACCEPTANCE_THRESHOLD'
+            ],
+            currentValue: '0.95 / 0.90',
+            suggestedValue: '0.93 / 0.87',
+            rationale: '先做小步放宽。'
+          }
+        ]
       },
       l3: {
         enabled: true,
@@ -193,8 +242,17 @@ describe('admin dashboard cache metrics', () => {
           bypassReasons: [{ reason: 'structured_output_request', count: 2 }],
           rates: expect.objectContaining({
             semanticHitRate: 0.3,
-            embeddingHitRate: 0.8
-          })
+            embeddingHitRate: 0.8,
+            rankedRejectRate: 0.2
+          }),
+          diagnostics: expect.objectContaining({
+            primaryIssue: 'threshold'
+          }),
+          recommendations: [
+            expect.objectContaining({
+              id: 'relax_similarity_threshold'
+            })
+          ]
         }),
         l3: expect.objectContaining({
           bypassReasons: [{ reason: 'temperature_too_high', count: 1 }],

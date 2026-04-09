@@ -8,6 +8,7 @@ const redis = require('../../models/redis')
 const { authenticateAdmin } = require('../../middleware/auth')
 const logger = require('../../utils/logger')
 const config = require('../../../config/config')
+const systemLogService = require('../../services/systemLogService')
 
 const router = express.Router()
 
@@ -248,6 +249,55 @@ router.get('/check-updates', authenticateAdmin, async (req, res) => {
         error: true,
         warning: error.message || 'Failed to check for updates'
       }
+    })
+  }
+})
+
+router.get('/system-logs', authenticateAdmin, async (req, res) => {
+  try {
+    const data = await systemLogService.getSystemLogs({
+      file: req.query.file,
+      limit: req.query.limit,
+      level: req.query.level,
+      search: req.query.search
+    })
+
+    return res.json({
+      success: true,
+      data
+    })
+  } catch (error) {
+    logger.error('❌ Failed to get system logs:', error)
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to get system logs',
+      message: error.message
+    })
+  }
+})
+
+router.get('/system-logs/download', authenticateAdmin, async (req, res) => {
+  try {
+    const file = await systemLogService.getSystemLogFile(req.query.file, {
+      allowFallback: true
+    })
+
+    if (!file) {
+      return res.status(404).json({
+        success: false,
+        error: 'System log file not found'
+      })
+    }
+
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8')
+    res.setHeader('Content-Disposition', `attachment; filename="${file.name}"`)
+    return res.sendFile(file.path)
+  } catch (error) {
+    logger.error('❌ Failed to download system log file:', error)
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to download system log file',
+      message: error.message
     })
   }
 })

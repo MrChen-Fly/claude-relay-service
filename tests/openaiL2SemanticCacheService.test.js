@@ -9,7 +9,9 @@ jest.mock('../src/models/redis', () => ({
   getOpenAIL2Entries: jest.fn(),
   setOpenAIL2Entry: jest.fn(),
   addOpenAIL2IndexEntry: jest.fn(),
+  addOpenAIL2ShardIndexEntries: jest.fn(),
   getOpenAIL2CandidateKeys: jest.fn(),
+  getOpenAIL2HybridCandidateKeys: jest.fn(),
   incrementOpenAIL2CacheMetric: jest.fn(),
   incrementOpenAIL2CacheBypassReason: jest.fn()
 }))
@@ -75,11 +77,18 @@ describe('openaiL2SemanticCacheService', () => {
         embeddingTtlSeconds: 2592000,
         maxCandidates: 20,
         maxIndexedEntries: 200,
+        recallTokenLimit: 6,
+        recallPerTokenLimit: 12,
+        recallRecentLimit: 20,
+        recallTotalLimit: 60,
         maxTextLength: 12000,
         rankAcceptanceThreshold: 0.9,
         maxCacheableTemperature: 0.3
       }
     }
+    redis.getOpenAIL2CandidateKeys.mockResolvedValue([])
+    redis.getOpenAIL2HybridCandidateKeys.mockResolvedValue([])
+    redis.addOpenAIL2ShardIndexEntries.mockResolvedValue(true)
   })
 
   it('builds a cacheable plan for pure text responses requests', () => {
@@ -168,6 +177,36 @@ describe('openaiL2SemanticCacheService', () => {
 
     expect(plan.cacheable).toBe(true)
     expect(plan.queryText).toBe('hello world')
+  })
+
+  it('enriches follow-up prompts with recent context before building semantic recall tokens', () => {
+    const plan = openaiL2SemanticCacheService.buildCachePlan({
+      ...baseContext,
+      cacheContext: {
+        items: [
+          {
+            requestText: 'user: refactor redis candidate recall for semantic cache'
+          }
+        ]
+      },
+      requestBody: {
+        ...baseContext.requestBody,
+        input: [
+          {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: '继续' }]
+          }
+        ]
+      }
+    })
+
+    expect(plan.cacheable).toBe(true)
+    expect(plan.queryText).toContain('refactor redis candidate recall for semantic cache')
+    expect(plan.queryText).toContain('继续')
+    expect(plan.recallTokens).toEqual(
+      expect.arrayContaining(['semantic', 'candidate', 'refactor', 'redis'])
+    )
   })
 
   it('allows safe function tool requests when tool choice is automatic', () => {
@@ -350,7 +389,7 @@ describe('openaiL2SemanticCacheService', () => {
     redis.getOpenAIL2Embedding.mockResolvedValue({
       vector: [1, 0]
     })
-    redis.getOpenAIL2CandidateKeys.mockResolvedValue(['entry-key-1'])
+    redis.getOpenAIL2HybridCandidateKeys.mockResolvedValue(['entry-key-1'])
     redis.getOpenAIL2Entries.mockResolvedValue([
       {
         model: 'gpt-5',
@@ -384,9 +423,50 @@ describe('openaiL2SemanticCacheService', () => {
     expect(redis.incrementOpenAIL2CacheMetric).toHaveBeenCalledWith('cache_hit_semantic')
   })
 
+  it('records follow-up enrichment and shard recall metrics for hybrid recall lookups', async () => {
+    redis.getOpenAIL2Embedding.mockResolvedValue({
+      vector: [1, 0]
+    })
+    redis.getOpenAIL2HybridCandidateKeys.mockResolvedValue({
+      keys: [],
+      stats: {
+        shardLookups: 2,
+        shardHits: 0,
+        shardCandidateCount: 0,
+        recentCandidateCount: 0
+      }
+    })
+
+    const result = await openaiL2SemanticCacheService.beginRequest({
+      ...baseContext,
+      cacheContext: {
+        items: [
+          {
+            requestText: 'user: refactor redis candidate recall for semantic cache'
+          }
+        ]
+      },
+      requestBody: {
+        ...baseContext.requestBody,
+        input: [
+          {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: '继续' }]
+          }
+        ]
+      }
+    })
+
+    expect(result.kind).toBe('miss')
+    expect(redis.incrementOpenAIL2CacheMetric).toHaveBeenCalledWith('followup_enriched')
+    expect(redis.incrementOpenAIL2CacheMetric).toHaveBeenCalledWith('recall_lookup')
+    expect(redis.incrementOpenAIL2CacheMetric).toHaveBeenCalledWith('recall_shard_miss')
+  })
+
   it('requests and caches embeddings when no embedding cache exists', async () => {
     redis.getOpenAIL2Embedding.mockResolvedValue(null)
-    redis.getOpenAIL2CandidateKeys.mockResolvedValue([])
+    redis.getOpenAIL2HybridCandidateKeys.mockResolvedValue([])
     axios.mockResolvedValue({
       status: 200,
       data: {
@@ -452,7 +532,9 @@ describe('openaiL2SemanticCacheService', () => {
         entryTtlSeconds: 604800,
         embeddingTtlSeconds: 2592000,
         indexKey: 'cache:openai:l2:index:v1:api-key-1',
-        maxIndexedEntries: 200
+        maxIndexedEntries: 200,
+        recallTokens: ['hello', 'world'],
+        recallShardKeys: ['cache:openai:l2:recall:v1:api-key-1:scope:hello']
       },
       {
         statusCode: 200,
@@ -492,6 +574,13 @@ describe('openaiL2SemanticCacheService', () => {
     )
     expect(redis.addOpenAIL2IndexEntry).toHaveBeenCalledWith(
       'cache:openai:l2:index:v1:api-key-1',
+      expect.stringContaining('cache:openai:l2:entry:v1:api-key-1:'),
+      expect.any(Number),
+      604800,
+      200
+    )
+    expect(redis.addOpenAIL2ShardIndexEntries).toHaveBeenCalledWith(
+      ['cache:openai:l2:recall:v1:api-key-1:scope:hello'],
       expect.stringContaining('cache:openai:l2:entry:v1:api-key-1:'),
       expect.any(Number),
       604800,
@@ -556,7 +645,7 @@ describe('openaiL2SemanticCacheService', () => {
     redis.getOpenAIL2Embedding.mockResolvedValue({
       vector: [1, 0]
     })
-    redis.getOpenAIL2CandidateKeys.mockResolvedValue(['entry-key-1'])
+    redis.getOpenAIL2HybridCandidateKeys.mockResolvedValue(['entry-key-1'])
     redis.getOpenAIL2Entries.mockResolvedValue([
       {
         model: 'gpt-5',
@@ -600,7 +689,7 @@ describe('openaiL2SemanticCacheService', () => {
     config.openaiCache.l2.embeddingModel = 'BAAI/bge-m3'
 
     redis.getOpenAIL2Embedding.mockResolvedValue(null)
-    redis.getOpenAIL2CandidateKeys.mockResolvedValue([])
+    redis.getOpenAIL2HybridCandidateKeys.mockResolvedValue([])
     axios.mockResolvedValue({
       status: 200,
       data: {

@@ -4265,7 +4265,239 @@ function buildOpenAICacheSummary({ enabled, counters = {}, totals = {}, bypassRe
   }
 }
 
+function buildOpenAIL2ConfigSnapshot() {
+  const l2Config = config.openaiCache?.l2 || {}
+
+  return {
+    embeddingModel: l2Config.embeddingModel || 'text-embedding-3-small',
+    similarityThreshold:
+      typeof l2Config.similarityThreshold === 'number' ? l2Config.similarityThreshold : 0.95,
+    rankAcceptanceThreshold:
+      typeof l2Config.rankAcceptanceThreshold === 'number' ? l2Config.rankAcceptanceThreshold : 0.9,
+    recallTokenLimit: l2Config.recallTokenLimit || 6,
+    recallPerTokenLimit: l2Config.recallPerTokenLimit || 12,
+    recallRecentLimit: l2Config.recallRecentLimit || 20,
+    recallTotalLimit: l2Config.recallTotalLimit || 60,
+    maxCandidates: l2Config.maxCandidates || 20,
+    maxIndexedEntries: l2Config.maxIndexedEntries || 200,
+    entryTtlSeconds: l2Config.entryTtlSeconds || 604800,
+    embeddingTtlSeconds: l2Config.embeddingTtlSeconds || 2592000,
+    contextBufferEnabled: l2Config.contextBuffer?.enabled !== false,
+    contextBufferMaxItems: l2Config.contextBuffer?.maxItems || 6,
+    contextBufferTtlSeconds: l2Config.contextBuffer?.ttlSeconds || 604800
+  }
+}
+
+function formatOpenAICacheFixedNumber(value, digits = 2) {
+  const numericValue = Number(value)
+  return Number.isFinite(numericValue) ? numericValue.toFixed(digits) : '--'
+}
+
+function buildOpenAIL2Diagnostics({
+  enabled,
+  counters = {},
+  totals = {},
+  rates = {},
+  summary = {}
+}) {
+  const lookups = totals.lookups || 0
+  const embeddingRequests = totals.embeddingRequests || 0
+  const recallLookups = counters.recall_lookup || 0
+  const rankedRejectRate = calculateOpenAICacheRate(counters.cache_reject_ranked || 0, lookups)
+  const followUpEnrichmentRate = calculateOpenAICacheRate(counters.followup_enriched || 0, lookups)
+  const recallShardHitRate = calculateOpenAICacheRate(counters.recall_shard_hit || 0, recallLookups)
+  const recallShardMissRate = calculateOpenAICacheRate(counters.recall_shard_miss || 0, recallLookups)
+  const tuningReadiness = lookups >= 100 ? 'high' : lookups >= 30 ? 'medium' : 'low'
+
+  let primaryIssue = 'insufficient_data'
+  let message = '样本量不足，先累计一轮稳定流量，再做线上调参。'
+
+  if (!enabled) {
+    primaryIssue = 'disabled'
+    message = 'L2 当前未启用，线上不会产生语义缓存收益。'
+  } else if ((summary.participationRate || 0) < 0.35 && summary.topBypassReason?.reason) {
+    primaryIssue = 'bypass'
+    message = `可参与率偏低，当前首先被 ${summary.topBypassReason.reason} 阻塞。`
+  } else if (lookups >= 20 && rankedRejectRate >= 0.12 && (rates.semanticHitRate || 0) <= 0.18) {
+    primaryIssue = 'threshold'
+    message = '候选已经能召回，但较多结果卡在相似度或 rerank 接受线。'
+  } else if (recallLookups >= 10 && recallShardHitRate <= 0.25) {
+    primaryIssue = 'recall'
+    message = '分片召回命中偏低，说明候选池仍然偏窄。'
+  } else if (embeddingRequests >= 20 && (rates.embeddingHitRate || 0) < 0.7) {
+    primaryIssue = 'embedding'
+    message = 'Embedding 复用偏弱，热点查询还在频繁重算向量。'
+  } else if ((rates.semanticHitRate || 0) >= 0.25) {
+    primaryIssue = 'healthy'
+    message = 'L2 已进入可持续调优区间，建议小步调整后继续观察。'
+  } else if (lookups > 0) {
+    primaryIssue = 'warmup'
+    message = 'L2 已经在工作，但仍处于预热阶段。'
+  }
+
+  return {
+    sampleSize: lookups,
+    tuningReadiness,
+    primaryIssue,
+    message,
+    rankedRejectRate,
+    followUpEnrichmentRate,
+    recallShardHitRate,
+    recallShardMissRate
+  }
+}
+
+function buildOpenAIL2Recommendations({
+  enabled,
+  counters = {},
+  totals = {},
+  rates = {},
+  summary = {},
+  configSnapshot = {},
+  diagnostics = {}
+}) {
+  if (!enabled) {
+    return [
+      {
+        id: 'enable_l2_cache',
+        priority: 'high',
+        title: '先开启 L2 语义缓存',
+        summary: '当前面板没有观察意义，因为服务端没有真正参与语义缓存。',
+        params: ['OPENAI_L2_CACHE_ENABLED'],
+        currentValue: 'false',
+        suggestedValue: 'true',
+        rationale: '只有启用 L2 后，命中率、召回质量和阈值调优才有可观察样本。'
+      }
+    ]
+  }
+
+  if ((totals.lookups || 0) < 10) {
+    return [
+      {
+        id: 'collect_more_samples',
+        priority: 'medium',
+        title: '先补样本，再做线上调参',
+        summary: '当前 lookups 太少，直接改阈值很容易被噪声误导。',
+        params: [],
+        currentValue: `lookups=${totals.lookups || 0}`,
+        suggestedValue: '至少积累 30+ lookups 再观察',
+        rationale: 'L2 调参最好建立在一轮稳定流量和可复现请求样本之上。'
+      }
+    ]
+  }
+
+  const recommendations = []
+
+  if ((summary.participationRate || 0) < 0.35 && summary.topBypassReason?.reason) {
+    recommendations.push({
+      id: 'reduce_bypass_before_tuning',
+      priority: 'high',
+      title: '先压低 bypass，再动线上阈值',
+      summary: '当前主要问题不是参数过严，而是大量请求没有进入 L2。',
+      params: [],
+      currentValue: `${formatOpenAICacheFixedNumber(summary.participationRate * 100, 1)}% 可参与率`,
+      suggestedValue: `优先处理 ${summary.topBypassReason.reason}`,
+      rationale: '参与率偏低时，阈值和召回窗口的调节收益会被 bypass 直接吞掉。'
+    })
+  }
+
+  if (
+    (totals.lookups || 0) >= 20 &&
+    (diagnostics.rankedRejectRate || 0) >= 0.12 &&
+    (rates.semanticHitRate || 0) <= 0.18
+  ) {
+    const nextSimilarityThreshold = Math.max(0.86, (configSnapshot.similarityThreshold || 0.95) - 0.02)
+    const nextRankAcceptanceThreshold = Math.max(
+      0.82,
+      (configSnapshot.rankAcceptanceThreshold || 0.9) - 0.03
+    )
+
+    recommendations.push({
+      id: 'relax_similarity_threshold',
+      priority: 'high',
+      title: '适度放宽 L2 接受线',
+      summary: '召回后被 rerank 拒绝的比例偏高，说明现在的接受线过严。',
+      params: [
+        'OPENAI_L2_CACHE_SIMILARITY_THRESHOLD',
+        'OPENAI_L2_CACHE_RANK_ACCEPTANCE_THRESHOLD'
+      ],
+      currentValue: `${formatOpenAICacheFixedNumber(configSnapshot.similarityThreshold)} / ${formatOpenAICacheFixedNumber(configSnapshot.rankAcceptanceThreshold)}`,
+      suggestedValue: `${formatOpenAICacheFixedNumber(nextSimilarityThreshold)} / ${formatOpenAICacheFixedNumber(nextRankAcceptanceThreshold)}`,
+      rationale: '先做 0.02~0.03 的小步放宽，通常比一次性大幅降阈值更稳。'
+    })
+  }
+
+  if ((counters.recall_lookup || 0) >= 10 && (diagnostics.recallShardHitRate || 0) <= 0.25) {
+    recommendations.push({
+      id: 'expand_hybrid_recall_window',
+      priority: 'medium',
+      title: '扩一下 hybrid recall 窗口',
+      summary: '分片召回命中偏低，当前候选池对历史相似请求覆盖不足。',
+      params: [
+        'OPENAI_L2_CACHE_RECALL_PER_TOKEN_LIMIT',
+        'OPENAI_L2_CACHE_RECALL_TOTAL_LIMIT',
+        'OPENAI_L2_CACHE_RECALL_RECENT_LIMIT'
+      ],
+      currentValue: `${configSnapshot.recallPerTokenLimit}/${configSnapshot.recallTotalLimit}/${configSnapshot.recallRecentLimit}`,
+      suggestedValue: `${Math.min(24, (configSnapshot.recallPerTokenLimit || 12) + 4)}/${Math.min(120, (configSnapshot.recallTotalLimit || 60) + 20)}/${Math.min(40, (configSnapshot.recallRecentLimit || 20) + 10)}`,
+      rationale: '优先横向放宽召回池，而不是继续压低命中阈值，可以减少误命中风险。'
+    })
+  }
+
+  if (
+    (diagnostics.followUpEnrichmentRate || 0) >= 0.12 &&
+    (rates.semanticHitRate || 0) < 0.18 &&
+    configSnapshot.contextBufferEnabled
+  ) {
+    recommendations.push({
+      id: 'strengthen_followup_context',
+      priority: 'medium',
+      title: '增强 follow-up 场景的上下文召回',
+      summary: '低信号续写请求较多，当前上下文和分片召回深度还可以继续加一点。',
+      params: [
+        'OPENAI_L2_CACHE_CONTEXT_BUFFER_MAX_ITEMS',
+        'OPENAI_L2_CACHE_RECALL_TOKEN_LIMIT'
+      ],
+      currentValue: `${configSnapshot.contextBufferMaxItems}/${configSnapshot.recallTokenLimit}`,
+      suggestedValue: `${Math.min(10, (configSnapshot.contextBufferMaxItems || 6) + 2)}/${Math.min(10, (configSnapshot.recallTokenLimit || 6) + 2)}`,
+      rationale: '这类请求最依赖上下文补强，先增加 1~2 档比直接放宽命中线更稳。'
+    })
+  }
+
+  if ((totals.embeddingRequests || 0) >= 20 && (rates.embeddingHitRate || 0) < 0.7) {
+    const currentTtlDays = Math.max(1, Math.round((configSnapshot.embeddingTtlSeconds || 0) / 86400))
+    const nextTtlDays = Math.min(90, currentTtlDays * 2)
+
+    recommendations.push({
+      id: 'increase_embedding_ttl',
+      priority: 'medium',
+      title: '提高 embedding 缓存 TTL',
+      summary: 'Embedding 复用偏弱，热点请求在重复消耗向量计算。',
+      params: ['OPENAI_L2_CACHE_EMBEDDING_TTL_SECONDS'],
+      currentValue: `${currentTtlDays}d`,
+      suggestedValue: `${nextTtlDays}d`,
+      rationale: '如果模型和 embedding 源稳定，先延长 TTL 通常比增加召回窗口成本更低。'
+    })
+  }
+
+  if (recommendations.length === 0) {
+    recommendations.push({
+      id: 'hold_and_observe',
+      priority: 'low',
+      title: '当前参数先保持，继续观察',
+      summary: '现有指标没有显示出明显的阈值、召回或 embedding 瓶颈。',
+      params: [],
+      currentValue: `semantic hit ${formatOpenAICacheFixedNumber((rates.semanticHitRate || 0) * 100, 1)}%`,
+      suggestedValue: '维持当前配置，观察下一轮样本',
+      rationale: '命中链路已经跑通时，频繁改线上参数反而会破坏可比性。'
+    })
+  }
+
+  return recommendations.slice(0, 3)
+}
+
 redisClient.getOpenAICacheMetrics = async function () {
+  const l2ConfigSnapshot = buildOpenAIL2ConfigSnapshot()
   const defaultMetrics = {
     l1: {
       enabled: config.openaiCache?.enabled !== false,
@@ -4294,19 +4526,21 @@ redisClient.getOpenAICacheMetrics = async function () {
     },
     l2: {
       enabled: config.openaiCache?.l2?.enabled !== false,
-      embeddingModel: config.openaiCache?.l2?.embeddingModel || 'text-embedding-3-small',
-      similarityThreshold:
-        typeof config.openaiCache?.l2?.similarityThreshold === 'number'
-          ? config.openaiCache.l2.similarityThreshold
-          : 0.95,
+      embeddingModel: l2ConfigSnapshot.embeddingModel,
+      similarityThreshold: l2ConfigSnapshot.similarityThreshold,
       bypassReasons: [],
       counters: {
         cache_hit_semantic: 0,
         cache_miss: 0,
         cache_bypass: 0,
         cache_write: 0,
+        cache_reject_ranked: 0,
         embedding_hit: 0,
-        embedding_miss: 0
+        embedding_miss: 0,
+        followup_enriched: 0,
+        recall_lookup: 0,
+        recall_shard_hit: 0,
+        recall_shard_miss: 0
       },
       totals: {
         lookups: 0,
@@ -4315,7 +4549,10 @@ redisClient.getOpenAICacheMetrics = async function () {
       },
       rates: {
         semanticHitRate: 0,
-        embeddingHitRate: 0
+        embeddingHitRate: 0,
+        rankedRejectRate: 0,
+        followUpEnrichmentRate: 0,
+        recallShardHitRate: 0
       },
       summary: {
         cacheableRequests: 0,
@@ -4324,7 +4561,19 @@ redisClient.getOpenAICacheMetrics = async function () {
         bypassRate: 0,
         topBypassReason: null,
         status: config.openaiCache?.l2?.enabled !== false ? 'enabled' : 'disabled'
-      }
+      },
+      configSnapshot: l2ConfigSnapshot,
+      diagnostics: {
+        sampleSize: 0,
+        tuningReadiness: 'low',
+        primaryIssue: 'insufficient_data',
+        message: '样本量不足，先累计一轮稳定流量，再做线上调参。',
+        rankedRejectRate: 0,
+        followUpEnrichmentRate: 0,
+        recallShardHitRate: 0,
+        recallShardMissRate: 0
+      },
+      recommendations: []
     },
     l3: {
       enabled: config.openaiCache?.l3?.enabled !== false,
@@ -4376,8 +4625,13 @@ redisClient.getOpenAICacheMetrics = async function () {
       'cache_miss',
       'cache_bypass',
       'cache_write',
+      'cache_reject_ranked',
       'embedding_hit',
-      'embedding_miss'
+      'embedding_miss',
+      'followup_enriched',
+      'recall_lookup',
+      'recall_shard_hit',
+      'recall_shard_miss'
     ])
     const l3Counters = buildOpenAICacheMetricCounters(l3RawMetrics, [
       'cache_hit_exact',
@@ -4393,6 +4647,46 @@ redisClient.getOpenAICacheMetrics = async function () {
     const l2Lookups = l2Counters.cache_hit_semantic + l2Counters.cache_miss
     const l2EmbeddingRequests = l2Counters.embedding_hit + l2Counters.embedding_miss
     const l3Lookups = l3Counters.cache_hit_exact + l3Counters.cache_miss
+    const l2Summary = buildOpenAICacheSummary({
+      enabled: defaultMetrics.l2.enabled,
+      counters: l2Counters,
+      totals: {
+        lookups: l2Lookups,
+        requests: l2Lookups + l2Counters.cache_bypass
+      },
+      bypassReasons: l2BypassReasons
+    })
+    const l2Rates = {
+      semanticHitRate: calculateOpenAICacheRate(l2Counters.cache_hit_semantic, l2Lookups),
+      embeddingHitRate: calculateOpenAICacheRate(l2Counters.embedding_hit, l2EmbeddingRequests),
+      rankedRejectRate: calculateOpenAICacheRate(l2Counters.cache_reject_ranked, l2Lookups),
+      followUpEnrichmentRate: calculateOpenAICacheRate(l2Counters.followup_enriched, l2Lookups),
+      recallShardHitRate: calculateOpenAICacheRate(
+        l2Counters.recall_shard_hit,
+        l2Counters.recall_lookup
+      )
+    }
+    const l2Totals = {
+      lookups: l2Lookups,
+      requests: l2Lookups + l2Counters.cache_bypass,
+      embeddingRequests: l2EmbeddingRequests
+    }
+    const l2Diagnostics = buildOpenAIL2Diagnostics({
+      enabled: defaultMetrics.l2.enabled,
+      counters: l2Counters,
+      totals: l2Totals,
+      rates: l2Rates,
+      summary: l2Summary
+    })
+    const l2Recommendations = buildOpenAIL2Recommendations({
+      enabled: defaultMetrics.l2.enabled,
+      counters: l2Counters,
+      totals: l2Totals,
+      rates: l2Rates,
+      summary: l2Summary,
+      configSnapshot: l2ConfigSnapshot,
+      diagnostics: l2Diagnostics
+    })
 
     return {
       l1: {
@@ -4420,24 +4714,12 @@ redisClient.getOpenAICacheMetrics = async function () {
         ...defaultMetrics.l2,
         bypassReasons: l2BypassReasons,
         counters: l2Counters,
-        totals: {
-          lookups: l2Lookups,
-          requests: l2Lookups + l2Counters.cache_bypass,
-          embeddingRequests: l2EmbeddingRequests
-        },
-        rates: {
-          semanticHitRate: calculateOpenAICacheRate(l2Counters.cache_hit_semantic, l2Lookups),
-          embeddingHitRate: calculateOpenAICacheRate(l2Counters.embedding_hit, l2EmbeddingRequests)
-        },
-        summary: buildOpenAICacheSummary({
-          enabled: defaultMetrics.l2.enabled,
-          counters: l2Counters,
-          totals: {
-            lookups: l2Lookups,
-            requests: l2Lookups + l2Counters.cache_bypass
-          },
-          bypassReasons: l2BypassReasons
-        })
+        totals: l2Totals,
+        rates: l2Rates,
+        summary: l2Summary,
+        configSnapshot: l2ConfigSnapshot,
+        diagnostics: l2Diagnostics,
+        recommendations: l2Recommendations
       },
       l3: {
         ...defaultMetrics.l3,
@@ -4647,6 +4929,57 @@ redisClient.addOpenAIL2IndexEntry = async function (
   }
 }
 
+redisClient.addOpenAIL2ShardIndexEntries = async function (
+  shardKeys = [],
+  member,
+  score,
+  ttlSeconds,
+  maxIndexedEntries
+) {
+  try {
+    const client = this.getClient()
+    const uniqueShardKeys = [...new Set(shardKeys.filter(Boolean))]
+    if (!client || uniqueShardKeys.length === 0) {
+      return false
+    }
+
+    const pipeline = client.pipeline()
+    uniqueShardKeys.forEach((shardKey) => {
+      pipeline.zadd(shardKey, score, member)
+      pipeline.expire(shardKey, ttlSeconds)
+    })
+    await pipeline.exec()
+
+    if (Number.isInteger(maxIndexedEntries) && maxIndexedEntries > 0) {
+      const sizePipeline = client.pipeline()
+      uniqueShardKeys.forEach((shardKey) => {
+        sizePipeline.zcard(shardKey)
+      })
+      const sizes = await sizePipeline.exec()
+      const trimPipeline = client.pipeline()
+      let hasTrimCommands = false
+
+      sizes.forEach((result, index) => {
+        const currentSize = Number(result?.[1]) || 0
+        const trimCount = currentSize - maxIndexedEntries
+        if (trimCount > 0) {
+          hasTrimCommands = true
+          trimPipeline.zremrangebyrank(uniqueShardKeys[index], 0, trimCount - 1)
+        }
+      })
+
+      if (hasTrimCommands) {
+        await trimPipeline.exec()
+      }
+    }
+
+    return true
+  } catch (error) {
+    logger.error('Failed to write OpenAI L2 shard index entries:', error)
+    return false
+  }
+}
+
 redisClient.getOpenAIL2CandidateKeys = async function (indexKey, limit = 20) {
   try {
     const client = this.getClient()
@@ -4658,6 +4991,82 @@ redisClient.getOpenAIL2CandidateKeys = async function (indexKey, limit = 20) {
   } catch (error) {
     logger.error(`Failed to read OpenAI L2 candidate keys ${indexKey}:`, error)
     return []
+  }
+}
+
+redisClient.getOpenAIL2HybridCandidateKeys = async function (
+  indexKey,
+  shardKeys = [],
+  { recentLimit = 20, perShardLimit = 12, totalLimit = 60 } = {}
+) {
+  try {
+    const client = this.getClient()
+    if (!client) {
+      return []
+    }
+
+    const normalizedRecentLimit = Math.max(0, recentLimit)
+    const normalizedPerShardLimit = Math.max(1, perShardLimit)
+    const normalizedTotalLimit = Math.max(1, totalLimit)
+    const uniqueShardKeys = [...new Set(shardKeys.filter(Boolean))]
+    const pipeline = client.pipeline()
+
+    uniqueShardKeys.forEach((shardKey) => {
+      pipeline.zrevrange(shardKey, 0, Math.max(0, normalizedPerShardLimit - 1))
+    })
+
+    if (indexKey && normalizedRecentLimit > 0) {
+      pipeline.zrevrange(indexKey, 0, Math.max(0, normalizedRecentLimit - 1))
+    }
+
+    const results = await pipeline.exec()
+    const mergedKeys = []
+    const seenKeys = new Set()
+    let shardHits = 0
+    let shardCandidateCount = 0
+    let recentCandidateCount = 0
+
+    results.forEach((result, index) => {
+      const members = Array.isArray(result?.[1]) ? result[1] : []
+      const isShardResult = index < uniqueShardKeys.length
+
+      if (isShardResult) {
+        if (members.length > 0) {
+          shardHits += 1
+        }
+        shardCandidateCount += members.length
+      } else {
+        recentCandidateCount = members.length
+      }
+
+      members.forEach((member) => {
+        if (member && !seenKeys.has(member)) {
+          seenKeys.add(member)
+          mergedKeys.push(member)
+        }
+      })
+    })
+
+    return {
+      keys: mergedKeys.slice(0, normalizedTotalLimit),
+      stats: {
+        shardLookups: uniqueShardKeys.length,
+        shardHits,
+        shardCandidateCount,
+        recentCandidateCount
+      }
+    }
+  } catch (error) {
+    logger.error(`Failed to read OpenAI L2 hybrid candidate keys ${indexKey}:`, error)
+    return {
+      keys: [],
+      stats: {
+        shardLookups: 0,
+        shardHits: 0,
+        shardCandidateCount: 0,
+        recentCandidateCount: 0
+      }
+    }
   }
 }
 

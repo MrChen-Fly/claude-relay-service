@@ -28,6 +28,30 @@ const ALWAYS_DYNAMIC_REQUEST_REASON_MAP = {
   background: 'request_background',
   web_search_options: 'request_web_search_options'
 }
+const LOW_SIGNAL_FOLLOW_UP_PATTERN =
+  /^(continue|go on|keep going|again|retry|regenerate|same again|do it|proceed|继续|接着|继续写|继续做|再来一次|重试一下|按上面|照上面|基于上面|接着改|继续优化|改一下|优化一下|然后呢)$/i
+const SEMANTIC_RECALL_STOP_WORDS = new Set([
+  'a',
+  'an',
+  'and',
+  'are',
+  'assistant',
+  'for',
+  'from',
+  'help',
+  'into',
+  'of',
+  'on',
+  'or',
+  'please',
+  'pls',
+  'system',
+  'that',
+  'the',
+  'this',
+  'to',
+  'user'
+])
 
 function normalizeText(text) {
   if (typeof text !== 'string') {
@@ -35,6 +59,117 @@ function normalizeText(text) {
   }
 
   return text.replace(/\s+/g, ' ').trim()
+}
+
+function tokenizeSemanticText(text = '') {
+  if (typeof text !== 'string') {
+    return []
+  }
+
+  return text
+    .toLowerCase()
+    .split(/[^a-z0-9\u4e00-\u9fff]+/u)
+    .map((token) => token.trim())
+    .filter(Boolean)
+}
+
+function looksLikeLowSignalFollowUp(text = '') {
+  const normalized = normalizeText(text)
+  if (!normalized) {
+    return false
+  }
+
+  if (LOW_SIGNAL_FOLLOW_UP_PATTERN.test(normalized)) {
+    return true
+  }
+
+  const tokens = tokenizeSemanticText(normalized)
+  if (!tokens.length) {
+    return false
+  }
+
+  return tokens.every((token) =>
+    ['continue', 'again', 'retry', 'proceed', '继续', '接着', '然后', '上面'].includes(token)
+  )
+}
+
+function extractUserTextsFromCanonicalRequest(requestText = '') {
+  if (typeof requestText !== 'string') {
+    return []
+  }
+
+  return requestText
+    .split(/\r?\n/u)
+    .map((line) => normalizeText(line))
+    .filter((line) => line.toLowerCase().startsWith('user:'))
+    .map((line) => normalizeText(line.slice(5)))
+    .filter(Boolean)
+}
+
+function buildSemanticQueryText(canonicalPrompt = {}, options = {}) {
+  if (!canonicalPrompt?.supported) {
+    return ''
+  }
+
+  const items = Array.isArray(canonicalPrompt.items) ? canonicalPrompt.items : []
+  const userTurns = items
+    .filter((item) => item?.role === 'user' && item.text)
+    .map((item) => item.text)
+  const focalText = normalizeText(
+    userTurns[userTurns.length - 1] || canonicalPrompt.focalText || canonicalPrompt.text
+  )
+
+  if (!focalText) {
+    return ''
+  }
+
+  if (!looksLikeLowSignalFollowUp(focalText)) {
+    return focalText
+  }
+
+  const history = []
+  const appendUnique = (value) => {
+    const normalized = normalizeText(value)
+    if (!normalized || normalized === focalText || history.includes(normalized)) {
+      return
+    }
+
+    history.push(normalized)
+  }
+
+  userTurns.slice(0, -1).slice(-2).forEach(appendUnique)
+
+  const contextItems = Array.isArray(options.cacheContext?.items) ? options.cacheContext.items : []
+  contextItems.slice(-2).forEach((item) => {
+    const userTexts = extractUserTextsFromCanonicalRequest(item?.requestText)
+    const latestUserText = userTexts[userTexts.length - 1]
+    appendUnique(latestUserText)
+  })
+
+  const enrichedSegments = [...history.slice(-2), focalText]
+  return enrichedSegments.join('\n').trim()
+}
+
+function buildRecallTokens(text = '', options = {}) {
+  const limit = Number.isInteger(options.limit) && options.limit > 0 ? options.limit : 6
+  const tokens = tokenizeSemanticText(text)
+  const uniqueTokens = []
+
+  for (const token of tokens) {
+    if (SEMANTIC_RECALL_STOP_WORDS.has(token) || looksLikeLowSignalFollowUp(token)) {
+      continue
+    }
+
+    if (/^[a-z0-9]+$/u.test(token) && token.length < 2) {
+      continue
+    }
+
+    if (!uniqueTokens.includes(token)) {
+      uniqueTokens.push(token)
+    }
+  }
+
+  return uniqueTokens.sort((left, right) => right.length - left.length).slice(0, limit)
 }
 
 function mapMessageRole(role) {
@@ -734,6 +869,7 @@ function buildCanonicalPrompt(requestBody = {}, options = {}) {
 
 module.exports = {
   normalizeText,
+  tokenizeSemanticText,
   normalizeCacheValue,
   normalizeFunctionTool,
   toResponsesFunctionTool,
@@ -750,8 +886,12 @@ module.exports = {
   mapMessageRole,
   isMessageInputItem,
   extractTextFromContent,
+  extractUserTextsFromCanonicalRequest,
   buildCanonicalPrompt,
+  buildSemanticQueryText,
+  buildRecallTokens,
   isCodexCliBoilerplate,
+  looksLikeLowSignalFollowUp,
   isCacheSafeFunctionTool,
   getToolChoiceMode
 }
