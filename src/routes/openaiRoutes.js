@@ -16,7 +16,6 @@ const { updateRateLimitCounters } = require('../utils/rateLimitHelper')
 const { IncrementalSSEParser } = require('../utils/sseParser')
 const { getSafeMessage } = require('../utils/errorSanitizer')
 const { inferRequestCapabilities } = require('../services/openaiProtocol/capabilityProfile')
-const openaiL1CacheService = require('../services/cache/openaiL1CacheService')
 
 // Codex CLI 系统提示词（非 Codex CLI 客户端请求时注入，统一端点也使用）
 const CODEX_CLI_INSTRUCTIONS =
@@ -266,8 +265,6 @@ const handleResponses = async (req, res) => {
   let account = null
   let proxy = null
   let accessToken = null
-  let cacheDecision = null
-
   try {
     // 从中间件获取 API Key 数据
     const apiKeyData = req.apiKey || {}
@@ -404,19 +401,6 @@ const handleResponses = async (req, res) => {
       req.body['store'] = false
     } else if (req.body && Object.prototype.hasOwnProperty.call(req.body, 'store')) {
       delete req.body['store']
-    }
-
-    cacheDecision = await openaiL1CacheService.beginRequest({
-      tenantId: apiKeyData?.id,
-      provider: 'openai',
-      endpoint: isCompactRoute ? 'responses/compact' : 'responses',
-      requestBody: req.body,
-      requestHeaders: req.headers,
-      resolvedModel: requestedModel,
-      isStream
-    })
-    if (cacheDecision.kind === 'hit') {
-      return openaiL1CacheService.replayCachedResponse(res, cacheDecision.entry)
     }
 
     // 创建代理 agent
@@ -722,14 +706,6 @@ const handleResponses = async (req, res) => {
           )
         }
 
-        await openaiL1CacheService.storeResponse(cacheDecision, {
-          statusCode: upstream.status,
-          body: responseData,
-          headers: upstream.headers,
-          actualModel,
-          usage: usageData || null
-        })
-
         // 返回响应
         res.json(responseData)
         return
@@ -949,12 +925,6 @@ const handleResponses = async (req, res) => {
 
     if (!res.headersSent) {
       res.status(status).json(responsePayload)
-    }
-  } finally {
-    try {
-      await openaiL1CacheService.finalizeRequest(cacheDecision)
-    } catch (cacheError) {
-      logger.error('Failed to finalize OpenAI route cache request:', cacheError)
     }
   }
 }

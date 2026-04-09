@@ -30,18 +30,9 @@ jest.mock('../src/utils/upstreamErrorHelper', () => ({
   parseRetryAfter: jest.fn(),
   sanitizeErrorForClient: jest.fn((errorData) => errorData)
 }))
-jest.mock('../src/services/cache/gptcache/openaiCacheChainService', () => ({
-  beginRequest: jest.fn(),
-  prepareStreamWriteback: jest.fn(async (decision) => decision),
-  storeUpstreamResponse: jest.fn(),
-  finalizeRequest: jest.fn(),
-  replayCachedResponse: jest.fn(),
-  recordCacheReplay: jest.fn()
-}))
 
 const openaiResponsesAccountService = require('../src/services/account/openaiResponsesAccountService')
 const apiKeyService = require('../src/services/apiKeyService')
-const openaiCacheChainService = require('../src/services/cache/gptcache/openaiCacheChainService')
 const openaiResponsesRelayService = require('../src/services/relay/openaiResponsesRelayService')
 
 function createSseStream(events) {
@@ -56,18 +47,6 @@ function createSseStream(events) {
 describe('openaiResponsesRelayService standard responses client compatibility', () => {
   beforeEach(() => {
     jest.clearAllMocks()
-    openaiCacheChainService.beginRequest.mockResolvedValue({
-      kind: 'bypass',
-      source: 'upstream',
-      l1Decision: {
-        kind: 'bypass',
-        reason: 'cache_disabled'
-      },
-      l2Decision: {
-        kind: 'bypass',
-        reason: 'cache_disabled'
-      }
-    })
   })
 
   afterEach(() => {
@@ -150,16 +129,6 @@ describe('openaiResponsesRelayService standard responses client compatibility', 
         }
       ]
     })
-    expect(openaiCacheChainService.storeUpstreamResponse).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        statusCode: 200,
-        body: expect.objectContaining({
-          id: 'resp_compat_1',
-          model: 'gpt-5.4'
-        })
-      })
-    )
     expect(apiKeyService.recordUsage).toHaveBeenCalledWith(
       'api-key-compat-1',
       9,

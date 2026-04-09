@@ -52,7 +52,6 @@ class Application {
       logger.info('🔄 Connecting to Redis...')
       await redis.connect()
       logger.success('Redis connected successfully')
-      await redis.initializeOpenAICacheMetricsBaseline()
 
       // 📊 检查数据迁移（版本 > 1.1.250 时执行）
       const { getAppVersion, versionGt } = require('./utils/commonHelper')
@@ -440,13 +439,9 @@ class Application {
       // 📊 指标端点
       this.app.get('/metrics', async (req, res) => {
         try {
-          const [stats, openaiCache] = await Promise.all([
-            redis.getSystemStats(),
-            redis.getOpenAICacheMetrics()
-          ])
+          const stats = await redis.getSystemStats()
           const metrics = {
             ...stats,
-            openaiCache,
             uptime: process.uptime(),
             memory: process.memoryUsage(),
             timestamp: new Date().toISOString()

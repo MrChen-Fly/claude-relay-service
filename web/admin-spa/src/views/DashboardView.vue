@@ -458,7 +458,6 @@
       </div>
     </div>
 
-    <CacheObservabilityPanel :cache-metrics="dashboardData.cacheMetrics" />
 
     <!-- 模型消费统计 -->
     <div class="mb-8">
@@ -785,7 +784,6 @@ import Chart from 'chart.js/auto'
 import { useDashboardStore } from '@/stores/dashboard'
 import { useThemeStore } from '@/stores/theme'
 import { formatNumber, showToast } from '@/utils/tools'
-import CacheObservabilityPanel from '@/components/dashboard/CacheObservabilityPanel.vue'
 
 import { getBalanceSummaryApi } from '@/utils/http_apis'
 

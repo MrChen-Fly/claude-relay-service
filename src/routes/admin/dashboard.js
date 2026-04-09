@@ -39,8 +39,7 @@ router.get('/dashboard', authenticateAdmin, async (req, res) => {
       droidAccounts,
       todayStats,
       systemAverages,
-      realtimeMetrics,
-      cacheMetrics
+      realtimeMetrics
     ] = await Promise.all([
       claudeAccountService.getAllAccounts(),
       claudeConsoleAccountService.getAllAccounts(),
@@ -52,8 +51,7 @@ router.get('/dashboard', authenticateAdmin, async (req, res) => {
       droidAccountService.getAllAccounts(),
       redis.getTodayStats(),
       redis.getSystemAverages(),
-      redis.getRealtimeSystemMetrics(),
-      redis.getOpenAICacheMetrics()
+      redis.getRealtimeSystemMetrics()
     ])
 
     // 有全局统计时只获取计数，否则拉全量
@@ -338,7 +336,6 @@ router.get('/dashboard', authenticateAdmin, async (req, res) => {
         windowMinutes: realtimeMetrics.windowMinutes,
         isHistorical: realtimeMetrics.windowMinutes === 0 // 标识是否使用了历史数据
       },
-      cacheMetrics,
       systemHealth: {
         redisConnected: redis.isConnected,
         claudeAccountsHealthy: claudeStats.normal + claudeConsoleStats.normal > 0,

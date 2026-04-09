@@ -14,12 +14,11 @@ const { IncrementalSSEParser } = require('../../utils/sseParser')
 const ChatToResponsesConverter = require('../openaiProtocol/chatToResponsesConverter')
 const CodexToOpenAIConverter = require('../codexToOpenAI')
 const redis = require('../../models/redis')
-const openaiCacheChainService = require('../cache/gptcache/openaiCacheChainService')
 const {
   normalizeTargetPath,
   shouldRetryWithAlternateProtocol
 } = require('../openaiProtocol/upstreamProtocolHelper')
-const { normalizeResponsesToolingRequest } = require('../cache/openaiCacheCanonicalizer')
+const { normalizeResponsesToolingRequest } = require('../openaiProtocol/toolingNormalizer')
 
 // lastUsedAt 更新节流（每账户 60 秒内最多更新一次，使用 LRU 防止内存泄漏）
 const lastUsedAtThrottle = new LRUCache(1000) // 最多缓存 1000 个账户
@@ -223,7 +222,6 @@ class OpenAIResponsesRelayService {
     let concurrencyAcquired = false
     let leaseRefreshInterval = null
     let releaseConcurrencyInFinally = true
-    let cacheDecision = null
     const sessionId = req.headers['session_id'] || req.body?.session_id
     const sessionHash = sessionId
       ? crypto.createHash('sha256').update(sessionId).digest('hex')
@@ -250,34 +248,6 @@ class OpenAIResponsesRelayService {
       const attempts = this._buildAttempts(req, options)
       const isStreamRequest = attempts.some((attempt) => !!attempt.body?.stream)
       const primaryAttempt = attempts[0] || {}
-      const cacheEndpoint = this._getCacheEndpointFromPath(req.path)
-      const cacheRequestedModel =
-        primaryAttempt.requestedModel || primaryAttempt.body?.model || req.body?.model || null
-      const cacheResolvedModel = openaiResponsesAccountService.getMappedModel(
-        fullAccount.modelMapping || fullAccount.supportedModels,
-        cacheRequestedModel
-      )
-
-      cacheDecision = await openaiCacheChainService.beginRequest({
-        tenantId: apiKeyData?.id,
-        provider: 'openai-responses',
-        endpoint: cacheEndpoint,
-        requestBody: primaryAttempt.body || req.body,
-        requestHeaders: req.headers,
-        resolvedModel: cacheResolvedModel,
-        isStream: isStreamRequest,
-        fullAccount
-      })
-      if (cacheDecision.kind === 'hit') {
-        req.removeListener('close', handleClientDisconnect)
-        res.removeListener('close', handleClientDisconnect)
-
-        if (isStreamRequest) {
-          return this._replayCachedStreamResponse(res, cacheDecision)
-        }
-
-        return openaiCacheChainService.replayCachedResponse(res, cacheDecision)
-      }
 
       concurrencyAcquired = await this._acquireConcurrencySlot(fullAccount, requestId, {
         isStream: isStreamRequest
@@ -547,8 +517,7 @@ class OpenAIResponsesRelayService {
           handleClientDisconnect,
           req,
           requestMetadata,
-          responseAdapter,
-          cacheDecision
+          responseAdapter
         )
       }
 
@@ -557,19 +526,6 @@ class OpenAIResponsesRelayService {
         response.data &&
         typeof response.data.pipe === 'function'
       ) {
-        const streamCacheDecision = await openaiCacheChainService.prepareStreamWriteback(
-          cacheDecision,
-          {
-            tenantId: apiKeyData?.id,
-            provider: 'openai-responses',
-            endpoint: cacheEndpoint,
-            requestBody: selectedAttempt.body || req.body,
-            requestHeaders: req.headers,
-            resolvedModel: cacheResolvedModel,
-            isStream: true,
-            fullAccount
-          }
-        )
         releaseConcurrencyInFinally = false
         return this._handleStreamResponse(
           response,
@@ -581,7 +537,6 @@ class OpenAIResponsesRelayService {
           req,
           requestMetadata,
           responseAdapter,
-          streamCacheDecision,
           async () => {
             if (leaseRefreshInterval) {
               clearInterval(leaseRefreshInterval)
@@ -612,14 +567,6 @@ class OpenAIResponsesRelayService {
         selectedAttempt.requestedModel ||
         selectedAttempt.body?.model ||
         null
-
-      await openaiCacheChainService.storeUpstreamResponse(cacheDecision, {
-        statusCode: response.status,
-        body: this._buildClientPayload(responseData, responseAdapter),
-        headers: response.headers,
-        actualModel,
-        usage: usageData
-      })
 
       return this._handleNormalResponse(
         response,
@@ -748,12 +695,6 @@ class OpenAIResponsesRelayService {
         }
       })
     } finally {
-      try {
-        await openaiCacheChainService.finalizeRequest(cacheDecision)
-      } catch (cacheError) {
-        logger.error('Failed to finalize OpenAI-Responses cache request:', cacheError)
-      }
-
       if (releaseConcurrencyInFinally) {
         if (leaseRefreshInterval) {
           clearInterval(leaseRefreshInterval)
@@ -1260,36 +1201,6 @@ class OpenAIResponsesRelayService {
     }
   }
 
-  async _replayCachedStreamResponse(res, cacheDecision = {}) {
-    const entry = cacheDecision.entry || {}
-    const responseBody = entry.body
-
-    for (const [headerName, headerValue] of Object.entries(entry.headers || {})) {
-      res.setHeader(headerName, headerValue)
-    }
-
-    res.setHeader('Content-Type', 'text/event-stream')
-    res.setHeader('Cache-Control', 'no-cache')
-    res.setHeader('Connection', 'keep-alive')
-    res.setHeader('X-Accel-Buffering', 'no')
-
-    await openaiCacheChainService.recordCacheReplay(cacheDecision)
-
-    const events = this._buildCachedStreamEvents(responseBody)
-    for (const event of events) {
-      if (res.destroyed) {
-        break
-      }
-      res.write(event)
-    }
-
-    if (!res.destroyed) {
-      res.end()
-    }
-
-    return res
-  }
-
   _buildCachedStreamEvents(responseBody = {}) {
     if (!responseBody || typeof responseBody !== 'object') {
       return []
@@ -1568,8 +1479,7 @@ class OpenAIResponsesRelayService {
     handleClientDisconnect,
     req,
     requestMetadata = null,
-    responseAdapter = null,
-    cacheDecision = null
+    responseAdapter = null
   ) {
     try {
       const aggregatedResult = await this._consumeSuccessfulStreamResponse(
@@ -1581,14 +1491,6 @@ class OpenAIResponsesRelayService {
       if (!responseBody || typeof responseBody !== 'object') {
         throw new Error('Failed to aggregate upstream stream response body')
       }
-
-      await openaiCacheChainService.storeUpstreamResponse(cacheDecision, {
-        statusCode: response.status,
-        body: responseBody,
-        headers: response.headers,
-        actualModel: aggregatedResult.actualModel,
-        usage: aggregatedResult.usage
-      })
 
       req.removeListener('close', handleClientDisconnect)
       res.removeListener('close', handleClientDisconnect)
@@ -1638,7 +1540,6 @@ class OpenAIResponsesRelayService {
     req,
     requestMetadata = null,
     responseAdapter = null,
-    streamCacheDecision = null,
     onStreamFinished = null
   ) {
     res.setHeader('Content-Type', 'text/event-stream')
@@ -1765,12 +1666,6 @@ class OpenAIResponsesRelayService {
         responseAdapter.finalizeStream(writeChunk)
       }
 
-      const cacheableResponseBody =
-        responseAdapter?.getFinalPayload?.() ||
-        this._buildCapturedResponsesPayload(streamCaptureState, finalResponseBody) ||
-        finalResponseBody ||
-        null
-
       if (usageData) {
         try {
           const totalInputTokens = usageData.input_tokens || usageData.prompt_tokens || 0
@@ -1840,37 +1735,6 @@ class OpenAIResponsesRelayService {
         )
 
         logger.warn(`Processing rate limit for OpenAI-Responses account ${account.id} from stream`)
-      }
-
-      if (
-        streamCacheDecision &&
-        cacheableResponseBody &&
-        typeof cacheableResponseBody === 'object' &&
-        !cacheableResponseBody.error
-      ) {
-        try {
-          await openaiCacheChainService.storeUpstreamResponse(streamCacheDecision, {
-            statusCode: response.status,
-            body: cacheableResponseBody,
-            headers: response.headers,
-            actualModel:
-              actualModel ||
-              cacheableResponseBody.model ||
-              cacheableResponseBody.response?.model ||
-              requestedModel ||
-              null,
-            usage:
-              usageData ||
-              cacheableResponseBody.usage ||
-              cacheableResponseBody.response?.usage ||
-              null
-          })
-        } catch (error) {
-          logger.warn('Failed to persist OpenAI-Responses stream cache entry', {
-            accountId: account.id,
-            reason: error.message
-          })
-        }
       }
 
       req.removeListener('close', handleClientDisconnect)

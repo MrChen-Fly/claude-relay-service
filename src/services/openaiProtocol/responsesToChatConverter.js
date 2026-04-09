@@ -1,4 +1,4 @@
-const { normalizeFunctionTool, normalizeToolChoice } = require('../cache/openaiCacheCanonicalizer')
+const { normalizeFunctionTool, normalizeToolChoice } = require('./toolingNormalizer')
 
 function mapMessageRole(role) {
   if (role === 'developer') {

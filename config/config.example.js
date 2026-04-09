@@ -103,64 +103,6 @@ const config = {
 
   // ⏱️ 请求超时配置
   requestTimeout: parseInt(process.env.REQUEST_TIMEOUT) || 600000, // 默认 10 分钟
-  openaiCache: {
-    enabled: process.env.OPENAI_L1_CACHE_ENABLED !== 'false',
-    defaultTtlSeconds: parseInt(process.env.OPENAI_L1_CACHE_DEFAULT_TTL_SECONDS) || 86400,
-    embeddingsTtlSeconds: parseInt(process.env.OPENAI_L1_CACHE_EMBEDDINGS_TTL_SECONDS) || 604800,
-    lockTtlSeconds: parseInt(process.env.OPENAI_L1_CACHE_LOCK_TTL_SECONDS) || 15,
-    waitTimeoutMs: parseInt(process.env.OPENAI_L1_CACHE_WAIT_TIMEOUT_MS) || 3000,
-    waitPollMs: parseInt(process.env.OPENAI_L1_CACHE_WAIT_POLL_MS) || 100,
-    maxCacheableTemperature:
-      process.env.OPENAI_L1_CACHE_MAX_TEMPERATURE !== undefined &&
-      process.env.OPENAI_L1_CACHE_MAX_TEMPERATURE !== ''
-        ? parseFloat(process.env.OPENAI_L1_CACHE_MAX_TEMPERATURE)
-        : 0.3,
-    l2: {
-      enabled: process.env.OPENAI_L2_CACHE_ENABLED !== 'false',
-      embeddingBaseUrl: process.env.OPENAI_L2_CACHE_EMBEDDING_BASE_URL || '',
-      embeddingApiKey: process.env.OPENAI_L2_CACHE_EMBEDDING_API_KEY || '',
-      embeddingModel: process.env.OPENAI_L2_CACHE_EMBEDDING_MODEL || 'text-embedding-3-small',
-      similarityThreshold:
-        process.env.OPENAI_L2_CACHE_SIMILARITY_THRESHOLD !== undefined &&
-        process.env.OPENAI_L2_CACHE_SIMILARITY_THRESHOLD !== ''
-          ? parseFloat(process.env.OPENAI_L2_CACHE_SIMILARITY_THRESHOLD)
-          : 0.95,
-      entryTtlSeconds: parseInt(process.env.OPENAI_L2_CACHE_ENTRY_TTL_SECONDS) || 604800,
-      embeddingTtlSeconds:
-        parseInt(process.env.OPENAI_L2_CACHE_EMBEDDING_TTL_SECONDS) || 2592000,
-      maxCandidates: parseInt(process.env.OPENAI_L2_CACHE_MAX_CANDIDATES) || 20,
-      maxIndexedEntries: parseInt(process.env.OPENAI_L2_CACHE_MAX_INDEXED_ENTRIES) || 200,
-      maxTextLength: parseInt(process.env.OPENAI_L2_CACHE_MAX_TEXT_LENGTH) || 12000,
-      rankAcceptanceThreshold:
-        process.env.OPENAI_L2_CACHE_RANK_ACCEPTANCE_THRESHOLD !== undefined &&
-        process.env.OPENAI_L2_CACHE_RANK_ACCEPTANCE_THRESHOLD !== ''
-          ? parseFloat(process.env.OPENAI_L2_CACHE_RANK_ACCEPTANCE_THRESHOLD)
-          : 0.9,
-      maxCacheableTemperature:
-        process.env.OPENAI_L2_CACHE_MAX_TEMPERATURE !== undefined &&
-        process.env.OPENAI_L2_CACHE_MAX_TEMPERATURE !== ''
-          ? parseFloat(process.env.OPENAI_L2_CACHE_MAX_TEMPERATURE)
-          : 0.3,
-      contextBuffer: {
-        enabled: process.env.OPENAI_L2_CACHE_CONTEXT_BUFFER_ENABLED !== 'false',
-        ttlSeconds: parseInt(process.env.OPENAI_L2_CACHE_CONTEXT_BUFFER_TTL_SECONDS) || 604800,
-        maxItems: parseInt(process.env.OPENAI_L2_CACHE_CONTEXT_BUFFER_MAX_ITEMS) || 6
-      }
-    },
-    l3: {
-      enabled: process.env.OPENAI_L3_CACHE_ENABLED !== 'false',
-      defaultTtlSeconds: parseInt(process.env.OPENAI_L3_CACHE_DEFAULT_TTL_SECONDS) || 3600,
-      embeddingsTtlSeconds: parseInt(process.env.OPENAI_L3_CACHE_EMBEDDINGS_TTL_SECONDS) || 604800,
-      lockTtlSeconds: parseInt(process.env.OPENAI_L3_CACHE_LOCK_TTL_SECONDS) || 15,
-      waitTimeoutMs: parseInt(process.env.OPENAI_L3_CACHE_WAIT_TIMEOUT_MS) || 3000,
-      waitPollMs: parseInt(process.env.OPENAI_L3_CACHE_WAIT_POLL_MS) || 100,
-      maxCacheableTemperature:
-        process.env.OPENAI_L3_CACHE_MAX_TEMPERATURE !== undefined &&
-        process.env.OPENAI_L3_CACHE_MAX_TEMPERATURE !== ''
-          ? parseFloat(process.env.OPENAI_L3_CACHE_MAX_TEMPERATURE)
-          : 0.3
-    }
-  },
 
   // 📈 使用限制
   limits: {
