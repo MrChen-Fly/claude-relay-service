@@ -351,6 +351,89 @@ function normalizeFunctionParameters(parameters) {
   }
 }
 
+function normalizeGenericStructuredValue(value) {
+  if (value === undefined || value === null || value === '') {
+    return undefined
+  }
+
+  if (Array.isArray(value)) {
+    const normalizedItems = value
+      .map((item) => normalizeGenericStructuredValue(item))
+      .filter((item) => item !== undefined)
+
+    return normalizedItems.length > 0 ? normalizedItems : undefined
+  }
+
+  if (typeof value === 'object') {
+    const normalized = {}
+
+    for (const key of Object.keys(value).sort()) {
+      const normalizedValue = normalizeGenericStructuredValue(value[key])
+      if (normalizedValue !== undefined) {
+        normalized[key] = normalizedValue
+      }
+    }
+
+    return Object.keys(normalized).length > 0 ? normalized : undefined
+  }
+
+  if (typeof value === 'string') {
+    const normalizedText = normalizeText(value)
+    return normalizedText || undefined
+  }
+
+  return value
+}
+
+function tryParseJsonPayload(value) {
+  if (typeof value !== 'string') {
+    return null
+  }
+
+  const trimmed = value.trim()
+  if (!trimmed || !/^[[{]/u.test(trimmed)) {
+    return null
+  }
+
+  try {
+    return JSON.parse(trimmed)
+  } catch (_) {
+    return null
+  }
+}
+
+function stringifyNormalizedPayload(value, options = {}) {
+  const { semanticMode = false } = options
+  const maxLength = semanticMode ? options.maxLength || 600 : 0
+  let normalizedValue = value
+
+  if (typeof value === 'string') {
+    const parsedJson = tryParseJsonPayload(value)
+    normalizedValue =
+      parsedJson === null ? normalizeText(value) : normalizeGenericStructuredValue(parsedJson)
+  } else {
+    normalizedValue = normalizeGenericStructuredValue(value)
+  }
+
+  if (normalizedValue === undefined || normalizedValue === null || normalizedValue === '') {
+    return ''
+  }
+
+  const text =
+    typeof normalizedValue === 'string' ? normalizedValue : JSON.stringify(normalizedValue)
+  const normalizedText = normalizeText(text)
+
+  if (!normalizedText) {
+    return ''
+  }
+
+  if (maxLength > 0 && normalizedText.length > maxLength) {
+    return `${normalizedText.slice(0, maxLength)} [${createHash(normalizedText).slice(0, 8)}]`
+  }
+
+  return normalizedText
+}
+
 function normalizeFunctionTool(tool) {
   if (!tool || typeof tool !== 'object') {
     return null
@@ -394,19 +477,102 @@ function normalizeFunctionTool(tool) {
   return normalizedTool
 }
 
+function normalizeCustomTool(tool) {
+  if (!tool || typeof tool !== 'object') {
+    return null
+  }
+
+  const type = normalizeStringValue(tool.type)
+  if (type !== 'custom') {
+    return null
+  }
+
+  const name = normalizeStringValue(tool.name || tool.custom?.name)
+  if (!name) {
+    return null
+  }
+
+  const normalizedTool = {
+    type: 'custom',
+    name
+  }
+
+  const description = normalizeText(tool.description || tool.custom?.description || '')
+  if (description) {
+    normalizedTool.description = description
+  }
+
+  const format = normalizeGenericStructuredValue(tool.format || tool.custom?.format)
+  if (format !== undefined) {
+    normalizedTool.format = format
+  }
+
+  for (const key of Object.keys(tool).sort()) {
+    if (['custom', 'description', 'format', 'name', 'type'].includes(key)) {
+      continue
+    }
+
+    const normalizedValue = normalizeGenericStructuredValue(tool[key])
+    if (normalizedValue !== undefined) {
+      normalizedTool[key] = normalizedValue
+    }
+  }
+
+  return normalizedTool
+}
+
+function normalizeWebSearchTool(tool) {
+  if (!tool || typeof tool !== 'object') {
+    return null
+  }
+
+  const type = normalizeStringValue(tool.type)
+  if (type !== 'web_search' && type !== 'web_search_preview') {
+    return null
+  }
+
+  const normalizedTool = {
+    type
+  }
+
+  const description = normalizeText(tool.description || '')
+  if (description) {
+    normalizedTool.description = description
+  }
+
+  for (const key of Object.keys(tool).sort()) {
+    if (['description', 'type'].includes(key)) {
+      continue
+    }
+
+    const normalizedValue = normalizeGenericStructuredValue(tool[key])
+    if (normalizedValue !== undefined) {
+      normalizedTool[key] = normalizedValue
+    }
+  }
+
+  return normalizedTool
+}
+
+function normalizeCacheSafeTool(tool) {
+  return normalizeFunctionTool(tool) || normalizeCustomTool(tool) || normalizeWebSearchTool(tool)
+}
+
+function getToolSortKey(tool) {
+  const type = normalizeStringValue(tool?.type || '')
+  const name = normalizeStringValue(tool?.function?.name || tool?.name || '')
+  return `${type}:${name}:${JSON.stringify(tool)}`
+}
+
 function normalizeToolDefinitions(tools) {
   if (!Array.isArray(tools)) {
     return null
   }
 
   return tools
-    .map((tool) => normalizeFunctionTool(tool))
+    .map((tool) => normalizeCacheSafeTool(tool))
     .filter(Boolean)
-    .sort((left, right) => {
-      const leftName = left.function?.name || ''
-      const rightName = right.function?.name || ''
-      return leftName.localeCompare(rightName)
-    })
+    .sort((left, right) => getToolSortKey(left).localeCompare(getToolSortKey(right)))
 }
 
 function toResponsesFunctionTool(tool) {
@@ -437,7 +603,7 @@ function toResponsesFunctionTool(tool) {
 }
 
 function isCacheSafeFunctionTool(tool) {
-  return Boolean(normalizeFunctionTool(tool))
+  return Boolean(normalizeCacheSafeTool(tool))
 }
 
 function hasUnsafeToolDefinitions(requestBody = {}) {
@@ -964,6 +1130,114 @@ function normalizeCacheValue(value, parentKey = '') {
   return Object.keys(normalized).length > 0 ? normalized : undefined
 }
 
+function normalizeToolItemName(item, type) {
+  const name = normalizeStringValue(item?.name || item?.tool_name || item?.function?.name || '')
+  if (name) {
+    return name
+  }
+
+  if (type.startsWith('web_search')) {
+    return 'web_search'
+  }
+
+  if (type.endsWith('_call')) {
+    return type.replace(/_call$/u, '')
+  }
+
+  return ''
+}
+
+function getStructuredInputPayload(item, type) {
+  if (type.endsWith('_call_output')) {
+    return item.output ?? item.result ?? item.response ?? item.content ?? item.text ?? ''
+  }
+
+  return item.arguments ?? item.input ?? item.query ?? item.content ?? item.text ?? ''
+}
+
+function formatStructuredInputLabel(type, name, options = {}) {
+  const { semanticMode = false } = options
+  if (!semanticMode) {
+    return name ? `${type}:${name}` : type
+  }
+
+  const category = type
+    .replace(/_call_output$/u, '')
+    .replace(/_call$/u, '')
+    .replace(/_/g, ' ')
+
+  if (type.endsWith('_call_output')) {
+    return name ? `${category} ${name} output` : `${category} output`
+  }
+
+  if (type.endsWith('_call')) {
+    return name ? `${category} ${name} call` : `${category} call`
+  }
+
+  return name ? `${category} ${name}` : category
+}
+
+function extractStructuredInputItem(item, options = {}) {
+  const { semanticMode = false } = options
+  const type = normalizeDiagnosticType(item?.type || '')
+
+  if (!type || type === 'unknown') {
+    return { supported: false, reason: 'unsupported_input_item' }
+  }
+
+  if (type === 'reasoning') {
+    return { supported: true, skip: true }
+  }
+
+  if (type === 'input_text' && typeof item.text === 'string') {
+    return {
+      supported: true,
+      role: 'user',
+      text: normalizeText(item.text)
+    }
+  }
+
+  if ((type === 'output_text' || type === 'text') && (item.output_text || item.text)) {
+    return {
+      supported: true,
+      role: 'assistant',
+      text: normalizeText(item.output_text || item.text)
+    }
+  }
+
+  if (type.endsWith('_call') || type.endsWith('_call_output')) {
+    const name = normalizeToolItemName(item, type)
+    const payload = stringifyNormalizedPayload(getStructuredInputPayload(item, type), {
+      semanticMode,
+      maxLength: type.endsWith('_call_output') ? 900 : 480
+    })
+    const label = formatStructuredInputLabel(type, name, { semanticMode })
+    const text = normalizeText(payload ? `${label} ${payload}` : label)
+
+    if (!text) {
+      return { supported: true, skip: true }
+    }
+
+    return {
+      supported: true,
+      role: type.endsWith('_call_output') ? 'tool' : 'assistant',
+      name: name || undefined,
+      text
+    }
+  }
+
+  const contentResult = extractTextFromContent(item)
+  if (!contentResult.supported) {
+    return { supported: false, reason: 'unsupported_input_item' }
+  }
+
+  return {
+    supported: true,
+    role: 'user',
+    text: contentResult.text
+  }
+}
+
 function buildCanonicalPrompt(requestBody = {}, options = {}) {
   const { semanticMode = false } = options
   const items = []
@@ -1019,15 +1293,23 @@ function buildCanonicalPrompt(requestBody = {}, options = {}) {
       continue
     }
 
-    const contentResult = extractTextFromContent(item)
-    if (!contentResult.supported) {
-      return { supported: false, reason: 'unsupported_input_item' }
+    const structuredItem = extractStructuredInputItem(item, { semanticMode })
+    if (!structuredItem.supported) {
+      return structuredItem
+    }
+
+    if (structuredItem.skip) {
+      continue
     }
 
     appendCanonicalItem(
       items,
-      'user',
-      normalizePromptText(contentResult.text, { semanticMode, role: 'user' })
+      structuredItem.role || 'user',
+      normalizePromptText(structuredItem.text, {
+        semanticMode,
+        role: structuredItem.role || 'user'
+      }),
+      structuredItem.name
     )
   }
 

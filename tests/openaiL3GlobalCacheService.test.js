@@ -142,18 +142,88 @@ describe('openaiL3GlobalCacheService', () => {
     expect(plan.cacheKey).toContain('cache:openai:l3:v1:openai:responses:')
   })
 
-  it('bypasses non-function tools with a specific reason', () => {
+  it('allows Codex-style custom and web search tools to participate in global cache', () => {
     const plan = openaiL3GlobalCacheService.buildCachePlan({
       ...baseContext,
       requestBody: {
         ...baseContext.requestBody,
-        tools: [{ type: 'web_search_preview' }]
+        input: [
+          {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'check cache bypass details' }]
+          },
+          {
+            type: 'function_call',
+            name: 'shell_command',
+            arguments: '{ "command": "rg tool_custom service.log" }'
+          },
+          {
+            type: 'function_call_output',
+            output: {
+              exit_code: 0,
+              stdout: 'OpenAI L3 cache bypass detail'
+            }
+          },
+          {
+            type: 'custom_tool_call',
+            name: 'apply_patch',
+            input: '*** Begin Patch'
+          },
+          {
+            type: 'custom_tool_call_output',
+            output: 'Success'
+          },
+          {
+            type: 'reasoning',
+            summary: [{ type: 'summary_text', text: 'internal' }]
+          }
+        ],
+        tools: [
+          {
+            type: 'function',
+            name: 'shell_command',
+            parameters: {
+              type: 'object',
+              properties: {
+                command: { type: 'string' }
+              }
+            }
+          },
+          {
+            type: 'custom',
+            name: 'apply_patch',
+            format: {
+              type: 'grammar',
+              syntax: 'lark',
+              definition: 'start: "patch"'
+            }
+          },
+          {
+            type: 'web_search',
+            search_context_size: 'medium',
+            external_web_access: true
+          }
+        ]
+      }
+    })
+
+    expect(plan.cacheable).toBe(true)
+    expect(plan.cacheKey).toContain('cache:openai:l3:v1:openai:responses:')
+  })
+
+  it('bypasses unsupported tool types with a specific reason', () => {
+    const plan = openaiL3GlobalCacheService.buildCachePlan({
+      ...baseContext,
+      requestBody: {
+        ...baseContext.requestBody,
+        tools: [{ type: 'computer_use_preview' }]
       }
     })
 
     expect(plan).toEqual({
       cacheable: false,
-      reason: 'tool_web_search_preview'
+      reason: 'tool_computer_use_preview'
     })
   })
 
