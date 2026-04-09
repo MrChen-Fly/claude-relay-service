@@ -7,6 +7,7 @@ const {
   getAlwaysDynamicRequestReason,
   getUnsupportedToolReason
 } = require('./openaiCacheCanonicalizer')
+const { logCacheBypassDetails } = require('./openaiCacheBypassDiagnostics')
 
 const CACHE_VERSION = 'v1'
 const REQUEST_HEADER_WHITELIST = ['openai-beta', 'openai-version', 'version']
@@ -219,6 +220,11 @@ async function beginRequest(context = {}) {
   const plan = buildCachePlan(context)
   if (!plan.cacheable) {
     await incrementBypassMetrics(plan.reason)
+    logCacheBypassDetails({
+      layer: 'l3',
+      reason: plan.reason,
+      context
+    })
     return { kind: 'bypass', reason: plan.reason }
   }
 

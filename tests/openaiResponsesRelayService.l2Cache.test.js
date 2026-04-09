@@ -365,7 +365,24 @@ describe('openaiResponsesRelayService L2 cache integration', () => {
     })
 
     const req = createReq({
-      stream: true
+      stream: true,
+      tools: [
+        {
+          name: 'echo_note',
+          description: 'Echo a note string back to the caller when explicitly needed.',
+          parameters: {
+            type: 'object',
+            properties: {
+              note: { type: 'string' }
+            },
+            required: ['note']
+          },
+          strict: true
+        }
+      ],
+      tool_choice: {
+        name: 'echo_note'
+      }
     })
     req.on = jest.fn()
     const res = createRes()
@@ -385,7 +402,31 @@ describe('openaiResponsesRelayService L2 cache integration', () => {
       }),
       expect.objectContaining({
         isStream: true,
-        tenantId: 'api-key-1'
+        tenantId: 'api-key-1',
+        requestBody: {
+          model: 'gpt-5',
+          stream: true,
+          input: 'hello',
+          tools: [
+            {
+              type: 'function',
+              name: 'echo_note',
+              description: 'Echo a note string back to the caller when explicitly needed.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  note: { type: 'string' }
+                },
+                required: ['note']
+              },
+              strict: true
+            }
+          ],
+          tool_choice: {
+            type: 'function',
+            name: 'echo_note'
+          }
+        }
       })
     )
 

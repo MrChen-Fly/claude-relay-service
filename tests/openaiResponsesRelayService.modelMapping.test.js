@@ -245,6 +245,34 @@ describe('openaiResponsesRelayService account model mapping integration', () => 
     )
 
     expect(result).toBe('done')
+    expect(openaiCacheChainService.beginRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestBody: {
+          model: 'gpt-5.4',
+          input: [{ role: 'user', content: 'hello' }],
+          stream: false,
+          tools: [
+            {
+              type: 'function',
+              name: 'echo_note',
+              description: 'Echo a note string back to the caller when explicitly needed.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  note: { type: 'string' }
+                },
+                required: ['note']
+              },
+              strict: true
+            }
+          ],
+          tool_choice: {
+            type: 'function',
+            name: 'echo_note'
+          }
+        }
+      })
+    )
     expect(axios).toHaveBeenCalledTimes(1)
     expect(axios.mock.calls[0][0].data.tools).toEqual([
       {

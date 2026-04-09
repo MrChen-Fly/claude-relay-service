@@ -15,6 +15,7 @@ const {
   getAlwaysDynamicRequestReason,
   isStructuredOutputRequest
 } = require('./openaiCacheCanonicalizer')
+const { logCacheBypassDetails } = require('./openaiCacheBypassDiagnostics')
 
 const CACHE_VERSION = 'v1'
 const RESPONSE_HEADER_WHITELIST = [
@@ -515,11 +516,15 @@ async function getOrCreateEmbedding(context, plan) {
  */
 async function getCandidateKeys(plan) {
   if (typeof redis.getOpenAIL2HybridCandidateKeys === 'function') {
-    const result = await redis.getOpenAIL2HybridCandidateKeys(plan.indexKey, plan.recallShardKeys || [], {
-      recentLimit: plan.recallRecentLimit,
-      perShardLimit: plan.recallPerTokenLimit,
-      totalLimit: plan.recallTotalLimit
-    })
+    const result = await redis.getOpenAIL2HybridCandidateKeys(
+      plan.indexKey,
+      plan.recallShardKeys || [],
+      {
+        recentLimit: plan.recallRecentLimit,
+        perShardLimit: plan.recallPerTokenLimit,
+        totalLimit: plan.recallTotalLimit
+      }
+    )
 
     if (Array.isArray(result)) {
       return {
@@ -553,6 +558,12 @@ async function beginRequest(context = {}) {
   const plan = buildCachePlan(context)
   if (!plan.cacheable) {
     await incrementBypassMetrics(plan.reason)
+    logCacheBypassDetails({
+      layer: 'l2',
+      reason: plan.reason,
+      context,
+      semanticSafeOnly: true
+    })
     return { kind: 'bypass', reason: plan.reason }
   }
 

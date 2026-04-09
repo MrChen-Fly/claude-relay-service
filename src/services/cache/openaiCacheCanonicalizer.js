@@ -1,3 +1,5 @@
+const crypto = require('crypto')
+
 const CODEX_CLI_PROMPT_PREFIX =
   "You are Codex, based on GPT-5. You are running as a coding agent in the Codex CLI on a user's computer."
 const NUMERIC_REQUEST_FIELDS = new Set([
@@ -59,6 +61,10 @@ function normalizeText(text) {
   }
 
   return text.replace(/\s+/g, ' ').trim()
+}
+
+function createHash(input) {
+  return crypto.createHash('sha256').update(JSON.stringify(input)).digest('hex')
 }
 
 function tokenizeSemanticText(text = '') {
@@ -569,6 +575,180 @@ function getToolChoiceMode(choice) {
   return normalizedChoice.type || 'custom'
 }
 
+function normalizeDiagnosticType(value) {
+  const normalized = normalizeStringValue(value)
+  if (!normalized) {
+    return 'unknown'
+  }
+
+  return String(normalized)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+}
+
+function summarizeToolTypes(requestBody = {}) {
+  if (!Array.isArray(requestBody.tools) || requestBody.tools.length === 0) {
+    return []
+  }
+
+  return Array.from(
+    new Set(
+      requestBody.tools.map((tool) => {
+        if (!tool || typeof tool !== 'object') {
+          return 'invalid_payload'
+        }
+
+        const rawType = normalizeStringValue(tool.type)
+        const sourceFunction =
+          tool.function && typeof tool.function === 'object' ? tool.function : tool
+        const toolName = normalizeStringValue(sourceFunction.name || tool.name)
+        if (rawType === 'function' || (!rawType && toolName)) {
+          return 'function'
+        }
+
+        return normalizeDiagnosticType(rawType || 'invalid_payload')
+      })
+    )
+  )
+}
+
+function collectContentPartTypes(content, bucket = new Set()) {
+  if (typeof content === 'string') {
+    bucket.add('text')
+    return bucket
+  }
+
+  if (Array.isArray(content)) {
+    content.forEach((item) => collectContentPartTypes(item, bucket))
+    return bucket
+  }
+
+  if (!content || typeof content !== 'object') {
+    bucket.add('invalid')
+    return bucket
+  }
+
+  const explicitType = normalizeDiagnosticType(content.type)
+  if (explicitType !== 'unknown') {
+    bucket.add(explicitType)
+  }
+
+  if (typeof content.input_text === 'string') {
+    bucket.add('input_text')
+  } else if (typeof content.output_text === 'string') {
+    bucket.add('output_text')
+  } else if (typeof content.text === 'string' || typeof content.content === 'string') {
+    bucket.add('text')
+  }
+
+  if (content.image_url) {
+    bucket.add('image_url')
+  }
+
+  if (content.image) {
+    bucket.add('image')
+  }
+
+  if (content.input_image) {
+    bucket.add('input_image')
+  }
+
+  return bucket
+}
+
+function summarizeInputShape(requestBody = {}) {
+  const result = {
+    inputContainer: 'none',
+    inputItemKinds: [],
+    inputRoles: [],
+    contentPartTypes: []
+  }
+
+  const itemKinds = new Set()
+  const roles = new Set()
+  const contentPartTypes = new Set()
+
+  const sourceItems = Array.isArray(requestBody.messages)
+    ? requestBody.messages
+    : Array.isArray(requestBody.input)
+      ? requestBody.input
+      : requestBody.input !== undefined && requestBody.input !== null
+        ? [requestBody.input]
+        : []
+
+  if (Array.isArray(requestBody.messages)) {
+    result.inputContainer = 'messages'
+  } else if (Array.isArray(requestBody.input)) {
+    result.inputContainer = 'input_array'
+  } else if (typeof requestBody.input === 'string') {
+    result.inputContainer = 'input_string'
+  } else if (requestBody.input !== undefined && requestBody.input !== null) {
+    result.inputContainer = 'input_single'
+  }
+
+  for (const item of sourceItems) {
+    if (typeof item === 'string') {
+      itemKinds.add('string')
+      contentPartTypes.add('text')
+      continue
+    }
+
+    if (!item || typeof item !== 'object') {
+      itemKinds.add('invalid')
+      continue
+    }
+
+    if (isMessageInputItem(item)) {
+      itemKinds.add(normalizeDiagnosticType(item.type || 'message'))
+      roles.add(mapMessageRole(item.role))
+      collectContentPartTypes(item.content, contentPartTypes)
+      continue
+    }
+
+    itemKinds.add(normalizeDiagnosticType(item.type || 'content_item'))
+    collectContentPartTypes(item, contentPartTypes)
+  }
+
+  result.inputItemKinds = Array.from(itemKinds).sort()
+  result.inputRoles = Array.from(roles).sort()
+  result.contentPartTypes = Array.from(contentPartTypes).sort()
+  return result
+}
+
+function buildCacheBypassSummary(requestBody = {}, options = {}) {
+  const toolProfile = buildToolProfile(requestBody, {
+    semanticSafeOnly: options.semanticSafeOnly === true
+  })
+  const inputShape = summarizeInputShape(requestBody)
+  const summary = {
+    topLevelKeys:
+      requestBody && typeof requestBody === 'object' ? Object.keys(requestBody).sort() : [],
+    hasTools: Array.isArray(requestBody.tools) && requestBody.tools.length > 0,
+    toolCount: Array.isArray(requestBody.tools) ? requestBody.tools.length : 0,
+    toolTypes: summarizeToolTypes(requestBody),
+    normalizedToolCount: Array.isArray(toolProfile.tools) ? toolProfile.tools.length : 0,
+    toolChoiceMode: getToolChoiceMode(requestBody.tool_choice),
+    parallelToolCalls:
+      Array.isArray(requestBody.tools) && requestBody.tools.length > 0
+        ? requestBody.parallel_tool_calls !== false
+        : null,
+    hasBackground: Boolean(requestBody.background),
+    hasWebSearchOptions: Boolean(requestBody.web_search_options),
+    structuredOutput: isStructuredOutputRequest(requestBody),
+    inputContainer: inputShape.inputContainer,
+    inputItemKinds: inputShape.inputItemKinds,
+    inputRoles: inputShape.inputRoles,
+    contentPartTypes: inputShape.contentPartTypes
+  }
+
+  return {
+    ...summary,
+    shapeHash: createHash(summary).slice(0, 16)
+  }
+}
+
 function normalizeResponsesToolChoice(choice) {
   const normalizedChoice = normalizeToolChoice(choice)
   if (normalizedChoice === undefined) {
@@ -890,6 +1070,7 @@ module.exports = {
   buildCanonicalPrompt,
   buildSemanticQueryText,
   buildRecallTokens,
+  buildCacheBypassSummary,
   isCodexCliBoilerplate,
   looksLikeLowSignalFollowUp,
   isCacheSafeFunctionTool,
