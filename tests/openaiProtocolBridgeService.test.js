@@ -351,4 +351,59 @@ describe('openaiProtocol bridge service', () => {
       function: { name: 'echo_note' }
     })
   })
+
+  it('adds empty properties for implicit function tools that only declare an object schema', async () => {
+    openaiResponsesRelayService.handleRequest.mockResolvedValue(
+      'responses-implicit-tools-empty-schema'
+    )
+
+    const req = {
+      path: '/v1/responses',
+      body: {
+        model: 'gpt-5.4',
+        input: [{ role: 'user', content: 'hello' }],
+        stream: false,
+        tools: [
+          {
+            name: 'runtime_status',
+            description: 'Read runtime status from MCP.',
+            parameters: {
+              type: 'object'
+            }
+          }
+        ],
+        tool_choice: {
+          name: 'runtime_status'
+        }
+      }
+    }
+
+    await bridgeService.handleResponsesClientRequest(
+      req,
+      {},
+      { id: 'responses-7', name: 'Implicit Tool Empty Schema Account' },
+      { id: 'api-key-7' },
+      'gpt-5.4',
+      { providerEndpoint: 'completions' }
+    )
+
+    const chatBody = openaiResponsesRelayService.handleRequest.mock.calls[0][4].attempts[0].body
+    expect(chatBody.tools).toEqual([
+      {
+        type: 'function',
+        function: {
+          name: 'runtime_status',
+          description: 'Read runtime status from MCP.',
+          parameters: {
+            type: 'object',
+            properties: {}
+          }
+        }
+      }
+    ])
+    expect(chatBody.tool_choice).toEqual({
+      type: 'function',
+      function: { name: 'runtime_status' }
+    })
+  })
 })

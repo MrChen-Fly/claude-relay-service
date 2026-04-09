@@ -188,6 +188,28 @@ function normalizeScalarValue(key, value) {
   return normalized
 }
 
+/**
+ * Ensures function tool parameter schemas remain acceptable to Responses-style
+ * upstream APIs that require object schemas to declare `properties`.
+ *
+ * @param {object|undefined} parameters
+ * @returns {object|undefined}
+ */
+function normalizeFunctionParameters(parameters) {
+  if (!parameters || typeof parameters !== 'object' || Array.isArray(parameters)) {
+    return parameters
+  }
+
+  if (parameters.type !== 'object' || parameters.properties !== undefined) {
+    return parameters
+  }
+
+  return {
+    ...parameters,
+    properties: {}
+  }
+}
+
 function normalizeFunctionTool(tool) {
   if (!tool || typeof tool !== 'object') {
     return null
@@ -217,7 +239,9 @@ function normalizeFunctionTool(tool) {
     normalizedTool.function.description = description
   }
 
-  const parameters = normalizeCacheValue(sourceFunction.parameters || tool.parameters, 'parameters')
+  const parameters = normalizeFunctionParameters(
+    normalizeCacheValue(sourceFunction.parameters || tool.parameters, 'parameters')
+  )
   if (parameters && typeof parameters === 'object' && Object.keys(parameters).length > 0) {
     normalizedTool.function.parameters = parameters
   }

@@ -267,6 +267,93 @@ describe('openaiResponsesRelayService account model mapping integration', () => 
     })
   })
 
+  it('adds empty properties for responses function tools with bare object schemas', async () => {
+    openaiResponsesAccountService.getAccount.mockResolvedValue({
+      id: 'responses-implicit-tools-2',
+      name: 'Implicit Tools Empty Schema Account',
+      baseApi: 'https://relay.example.com',
+      apiKey: 'secret-key',
+      providerEndpoint: 'responses'
+    })
+    axios.mockResolvedValue({
+      status: 200,
+      statusText: 'OK',
+      headers: {},
+      data: { ok: true }
+    })
+
+    jest.spyOn(openaiResponsesRelayService, '_throttledUpdateLastUsedAt').mockResolvedValue()
+    jest.spyOn(openaiResponsesRelayService, '_handleNormalResponse').mockResolvedValue('done')
+
+    const req = {
+      method: 'POST',
+      path: '/v1/responses',
+      headers: {},
+      body: {
+        model: 'gpt-5.4',
+        input: [{ role: 'user', content: 'hello' }],
+        stream: false
+      },
+      once: jest.fn(),
+      removeListener: jest.fn()
+    }
+    const res = {
+      once: jest.fn(),
+      removeListener: jest.fn()
+    }
+
+    const result = await openaiResponsesRelayService.handleRequest(
+      req,
+      res,
+      { id: 'responses-implicit-tools-2', name: 'Implicit Tools Empty Schema Account' },
+      { id: 'api-key-implicit-tools-2' },
+      {
+        attempts: [
+          {
+            path: '/v1/responses',
+            body: {
+              model: 'gpt-5.4',
+              input: [{ role: 'user', content: 'hello' }],
+              stream: false,
+              tools: [
+                {
+                  name: 'runtime_status',
+                  description: 'Read runtime status from MCP.',
+                  parameters: {
+                    type: 'object'
+                  }
+                }
+              ],
+              tool_choice: {
+                name: 'runtime_status'
+              }
+            },
+            transform: 'passthrough',
+            requestedModel: 'gpt-5.4'
+          }
+        ]
+      }
+    )
+
+    expect(result).toBe('done')
+    expect(axios).toHaveBeenCalledTimes(1)
+    expect(axios.mock.calls[0][0].data.tools).toEqual([
+      {
+        type: 'function',
+        name: 'runtime_status',
+        description: 'Read runtime status from MCP.',
+        parameters: {
+          type: 'object',
+          properties: {}
+        }
+      }
+    ])
+    expect(axios.mock.calls[0][0].data.tool_choice).toEqual({
+      type: 'function',
+      name: 'runtime_status'
+    })
+  })
+
   it('retries the alternate protocol and converts the final response when the first endpoint is rejected', async () => {
     openaiResponsesAccountService.getAccount.mockResolvedValue({
       id: 'responses-3',
