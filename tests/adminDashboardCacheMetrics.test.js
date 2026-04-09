@@ -106,6 +106,14 @@ describe('admin dashboard cache metrics', () => {
       windowMinutes: 5
     })
     redis.getOpenAICacheMetrics.mockResolvedValue({
+      scope: {
+        primary: 'sinceProcessStart',
+        primaryLabel: '本次进程',
+        baselineAvailable: true,
+        processStartedAt: '2026-04-09T04:00:00.000Z',
+        baselineCapturedAt: '2026-04-09T04:00:01.000Z',
+        note: '默认按本次进程观察，累计历史只保留作长期参考。'
+      },
       l1: {
         enabled: true,
         bypassReasons: [{ reason: 'stream_request', count: 1 }],
@@ -121,6 +129,40 @@ describe('admin dashboard cache metrics', () => {
         },
         rates: {
           hitRate: 0.5
+        },
+        cumulative: {
+          enabled: true,
+          bypassReasons: [{ reason: 'stream_request', count: 1 }],
+          counters: {
+            cache_hit_exact: 5,
+            cache_miss: 5,
+            cache_bypass: 1,
+            cache_write: 2
+          },
+          totals: {
+            lookups: 10,
+            requests: 11
+          },
+          rates: {
+            hitRate: 0.5
+          }
+        },
+        sinceProcessStart: {
+          enabled: true,
+          bypassReasons: [{ reason: 'stream_request', count: 1 }],
+          counters: {
+            cache_hit_exact: 2,
+            cache_miss: 3,
+            cache_bypass: 1,
+            cache_write: 1
+          },
+          totals: {
+            lookups: 5,
+            requests: 6
+          },
+          rates: {
+            hitRate: 0.4
+          }
         }
       },
       l2: {
@@ -193,7 +235,69 @@ describe('admin dashboard cache metrics', () => {
             suggestedValue: '0.93 / 0.87',
             rationale: '先做小步放宽。'
           }
-        ]
+        ],
+        cumulative: {
+          enabled: true,
+          embeddingModel: 'BAAI/bge-m3',
+          similarityThreshold: 0.95,
+          bypassReasons: [{ reason: 'structured_output_request', count: 2 }],
+          counters: {
+            cache_hit_semantic: 3,
+            cache_miss: 7,
+            cache_bypass: 2,
+            cache_write: 3,
+            cache_reject_ranked: 2,
+            embedding_hit: 4,
+            embedding_miss: 1,
+            followup_enriched: 2,
+            recall_lookup: 3,
+            recall_shard_hit: 1,
+            recall_shard_miss: 2
+          },
+          totals: {
+            lookups: 10,
+            requests: 12,
+            embeddingRequests: 5
+          },
+          rates: {
+            semanticHitRate: 0.3,
+            embeddingHitRate: 0.8,
+            rankedRejectRate: 0.2,
+            followUpEnrichmentRate: 0.2,
+            recallShardHitRate: 0.3333
+          }
+        },
+        sinceProcessStart: {
+          enabled: true,
+          embeddingModel: 'BAAI/bge-m3',
+          similarityThreshold: 0.95,
+          bypassReasons: [{ reason: 'structured_output_request', count: 1 }],
+          counters: {
+            cache_hit_semantic: 2,
+            cache_miss: 4,
+            cache_bypass: 1,
+            cache_write: 2,
+            cache_reject_ranked: 1,
+            embedding_hit: 3,
+            embedding_miss: 1,
+            followup_enriched: 1,
+            recall_lookup: 2,
+            recall_shard_hit: 1,
+            recall_shard_miss: 1
+          },
+          totals: {
+            lookups: 6,
+            requests: 7,
+            embeddingRequests: 4
+          },
+          rates: {
+            semanticHitRate: 0.3333,
+            embeddingHitRate: 0.75,
+            rankedRejectRate: 0.1667,
+            followUpEnrichmentRate: 0.1667,
+            recallShardHitRate: 0.5
+          }
+        }
       },
       l3: {
         enabled: true,
@@ -210,6 +314,40 @@ describe('admin dashboard cache metrics', () => {
         },
         rates: {
           hitRate: 0.2
+        },
+        cumulative: {
+          enabled: true,
+          bypassReasons: [{ reason: 'temperature_too_high', count: 1 }],
+          counters: {
+            cache_hit_exact: 2,
+            cache_miss: 8,
+            cache_bypass: 1,
+            cache_write: 2
+          },
+          totals: {
+            lookups: 10,
+            requests: 11
+          },
+          rates: {
+            hitRate: 0.2
+          }
+        },
+        sinceProcessStart: {
+          enabled: true,
+          bypassReasons: [{ reason: 'temperature_too_high', count: 1 }],
+          counters: {
+            cache_hit_exact: 1,
+            cache_miss: 3,
+            cache_bypass: 1,
+            cache_write: 1
+          },
+          totals: {
+            lookups: 4,
+            requests: 5
+          },
+          rates: {
+            hitRate: 0.25
+          }
         }
       }
     })
@@ -232,10 +370,19 @@ describe('admin dashboard cache metrics', () => {
     expect(response.body.success).toBe(true)
     expect(response.body.data.cacheMetrics).toEqual(
       expect.objectContaining({
+        scope: expect.objectContaining({
+          primary: 'sinceProcessStart',
+          baselineAvailable: true
+        }),
         l1: expect.objectContaining({
           bypassReasons: [{ reason: 'stream_request', count: 1 }],
           rates: expect.objectContaining({
             hitRate: 0.5
+          }),
+          sinceProcessStart: expect.objectContaining({
+            counters: expect.objectContaining({
+              cache_hit_exact: 2
+            })
           })
         }),
         l2: expect.objectContaining({
@@ -252,7 +399,12 @@ describe('admin dashboard cache metrics', () => {
             expect.objectContaining({
               id: 'relax_similarity_threshold'
             })
-          ]
+          ],
+          sinceProcessStart: expect.objectContaining({
+            counters: expect.objectContaining({
+              cache_hit_semantic: 2
+            })
+          })
         }),
         l3: expect.objectContaining({
           bypassReasons: [{ reason: 'temperature_too_high', count: 1 }],

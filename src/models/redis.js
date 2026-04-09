@@ -4226,9 +4226,67 @@ function parseOpenAICacheMetricValue(value) {
   return Number.isFinite(parsed) ? parsed : 0
 }
 
+const OPENAI_CACHE_METRIC_HASH_KEYS = {
+  l1: 'metrics:openai:l1',
+  l2: 'metrics:openai:l2',
+  l3: 'metrics:openai:l3'
+}
+
+const OPENAI_CACHE_LAYER_COUNTER_NAMES = {
+  l1: ['cache_hit_exact', 'cache_miss', 'cache_bypass', 'cache_write'],
+  l2: [
+    'cache_hit_semantic',
+    'cache_miss',
+    'cache_bypass',
+    'cache_write',
+    'cache_reject_ranked',
+    'embedding_hit',
+    'embedding_miss',
+    'followup_enriched',
+    'recall_lookup',
+    'recall_shard_hit',
+    'recall_shard_miss'
+  ],
+  l3: ['cache_hit_exact', 'cache_miss', 'cache_bypass', 'cache_write']
+}
+
+const openAICacheMetricsRuntime = {
+  processStartedAt: new Date().toISOString(),
+  baselineCapturedAt: null,
+  baselineRawMetricsByLayer: {
+    l1: {},
+    l2: {},
+    l3: {}
+  }
+}
+
 function buildOpenAICacheMetricCounters(rawMetrics = {}, metricNames = []) {
   return metricNames.reduce((result, metricName) => {
     result[metricName] = parseOpenAICacheMetricValue(rawMetrics[metricName])
+    return result
+  }, {})
+}
+
+function cloneOpenAICacheRawMetrics(rawMetrics = {}) {
+  return Object.entries(rawMetrics).reduce((result, [metricName, value]) => {
+    const parsedValue = parseOpenAICacheMetricValue(value)
+    if (parsedValue > 0) {
+      result[metricName] = parsedValue
+    }
+    return result
+  }, {})
+}
+
+function subtractOpenAICacheRawMetrics(rawMetrics = {}, baselineRawMetrics = {}) {
+  const metricNames = new Set([...Object.keys(rawMetrics), ...Object.keys(baselineRawMetrics)])
+
+  return [...metricNames].reduce((result, metricName) => {
+    const delta =
+      parseOpenAICacheMetricValue(rawMetrics[metricName]) -
+      parseOpenAICacheMetricValue(baselineRawMetrics[metricName])
+    if (delta > 0) {
+      result[metricName] = delta
+    }
     return result
   }, {})
 }
@@ -4496,111 +4554,212 @@ function buildOpenAIL2Recommendations({
   return recommendations.slice(0, 3)
 }
 
-redisClient.getOpenAICacheMetrics = async function () {
-  const l2ConfigSnapshot = buildOpenAIL2ConfigSnapshot()
-  const defaultMetrics = {
+async function readOpenAICacheRawMetricsByLayer(client) {
+  const [l1RawMetrics, l2RawMetrics, l3RawMetrics] = await Promise.all([
+    client.hgetall(OPENAI_CACHE_METRIC_HASH_KEYS.l1),
+    client.hgetall(OPENAI_CACHE_METRIC_HASH_KEYS.l2),
+    client.hgetall(OPENAI_CACHE_METRIC_HASH_KEYS.l3)
+  ])
+
+  return {
+    l1: l1RawMetrics || {},
+    l2: l2RawMetrics || {},
+    l3: l3RawMetrics || {}
+  }
+}
+
+function buildOpenAICacheMetricsFromRaw({
+  rawMetricsByLayer = {},
+  l2ConfigSnapshot = buildOpenAIL2ConfigSnapshot()
+} = {}) {
+  const l1Enabled = config.openaiCache?.enabled !== false
+  const l2Enabled = config.openaiCache?.l2?.enabled !== false
+  const l3Enabled = config.openaiCache?.l3?.enabled !== false
+  const l1RawMetrics = rawMetricsByLayer.l1 || {}
+  const l2RawMetrics = rawMetricsByLayer.l2 || {}
+  const l3RawMetrics = rawMetricsByLayer.l3 || {}
+
+  const l1Counters = buildOpenAICacheMetricCounters(
+    l1RawMetrics,
+    OPENAI_CACHE_LAYER_COUNTER_NAMES.l1
+  )
+  const l2Counters = buildOpenAICacheMetricCounters(
+    l2RawMetrics,
+    OPENAI_CACHE_LAYER_COUNTER_NAMES.l2
+  )
+  const l3Counters = buildOpenAICacheMetricCounters(
+    l3RawMetrics,
+    OPENAI_CACHE_LAYER_COUNTER_NAMES.l3
+  )
+  const l1BypassReasons = buildOpenAICacheBypassReasons(l1RawMetrics)
+  const l2BypassReasons = buildOpenAICacheBypassReasons(l2RawMetrics)
+  const l3BypassReasons = buildOpenAICacheBypassReasons(l3RawMetrics)
+
+  const l1Lookups = l1Counters.cache_hit_exact + l1Counters.cache_miss
+  const l2Lookups = l2Counters.cache_hit_semantic + l2Counters.cache_miss
+  const l2EmbeddingRequests = l2Counters.embedding_hit + l2Counters.embedding_miss
+  const l3Lookups = l3Counters.cache_hit_exact + l3Counters.cache_miss
+  const l2Summary = buildOpenAICacheSummary({
+    enabled: l2Enabled,
+    counters: l2Counters,
+    totals: {
+      lookups: l2Lookups,
+      requests: l2Lookups + l2Counters.cache_bypass
+    },
+    bypassReasons: l2BypassReasons
+  })
+  const l2Rates = {
+    semanticHitRate: calculateOpenAICacheRate(l2Counters.cache_hit_semantic, l2Lookups),
+    embeddingHitRate: calculateOpenAICacheRate(l2Counters.embedding_hit, l2EmbeddingRequests),
+    rankedRejectRate: calculateOpenAICacheRate(l2Counters.cache_reject_ranked, l2Lookups),
+    followUpEnrichmentRate: calculateOpenAICacheRate(l2Counters.followup_enriched, l2Lookups),
+    recallShardHitRate: calculateOpenAICacheRate(
+      l2Counters.recall_shard_hit,
+      l2Counters.recall_lookup
+    )
+  }
+  const l2Totals = {
+    lookups: l2Lookups,
+    requests: l2Lookups + l2Counters.cache_bypass,
+    embeddingRequests: l2EmbeddingRequests
+  }
+  const l2Diagnostics = buildOpenAIL2Diagnostics({
+    enabled: l2Enabled,
+    counters: l2Counters,
+    totals: l2Totals,
+    rates: l2Rates,
+    summary: l2Summary
+  })
+  const l2Recommendations = buildOpenAIL2Recommendations({
+    enabled: l2Enabled,
+    counters: l2Counters,
+    totals: l2Totals,
+    rates: l2Rates,
+    summary: l2Summary,
+    configSnapshot: l2ConfigSnapshot,
+    diagnostics: l2Diagnostics
+  })
+
+  return {
     l1: {
-      enabled: config.openaiCache?.enabled !== false,
-      bypassReasons: [],
-      counters: {
-        cache_hit_exact: 0,
-        cache_miss: 0,
-        cache_bypass: 0,
-        cache_write: 0
-      },
+      enabled: l1Enabled,
+      bypassReasons: l1BypassReasons,
+      counters: l1Counters,
       totals: {
-        lookups: 0,
-        requests: 0
+        lookups: l1Lookups,
+        requests: l1Lookups + l1Counters.cache_bypass
       },
       rates: {
-        hitRate: 0
+        hitRate: calculateOpenAICacheRate(l1Counters.cache_hit_exact, l1Lookups)
       },
-      summary: {
-        cacheableRequests: 0,
-        bypassedRequests: 0,
-        participationRate: 0,
-        bypassRate: 0,
-        topBypassReason: null,
-        status: config.openaiCache?.enabled !== false ? 'enabled' : 'disabled'
-      }
+      summary: buildOpenAICacheSummary({
+        enabled: l1Enabled,
+        counters: l1Counters,
+        totals: {
+          lookups: l1Lookups,
+          requests: l1Lookups + l1Counters.cache_bypass
+        },
+        bypassReasons: l1BypassReasons
+      })
     },
     l2: {
-      enabled: config.openaiCache?.l2?.enabled !== false,
+      enabled: l2Enabled,
       embeddingModel: l2ConfigSnapshot.embeddingModel,
       similarityThreshold: l2ConfigSnapshot.similarityThreshold,
-      bypassReasons: [],
-      counters: {
-        cache_hit_semantic: 0,
-        cache_miss: 0,
-        cache_bypass: 0,
-        cache_write: 0,
-        cache_reject_ranked: 0,
-        embedding_hit: 0,
-        embedding_miss: 0,
-        followup_enriched: 0,
-        recall_lookup: 0,
-        recall_shard_hit: 0,
-        recall_shard_miss: 0
-      },
-      totals: {
-        lookups: 0,
-        requests: 0,
-        embeddingRequests: 0
-      },
-      rates: {
-        semanticHitRate: 0,
-        embeddingHitRate: 0,
-        rankedRejectRate: 0,
-        followUpEnrichmentRate: 0,
-        recallShardHitRate: 0
-      },
-      summary: {
-        cacheableRequests: 0,
-        bypassedRequests: 0,
-        participationRate: 0,
-        bypassRate: 0,
-        topBypassReason: null,
-        status: config.openaiCache?.l2?.enabled !== false ? 'enabled' : 'disabled'
-      },
+      bypassReasons: l2BypassReasons,
+      counters: l2Counters,
+      totals: l2Totals,
+      rates: l2Rates,
+      summary: l2Summary,
       configSnapshot: l2ConfigSnapshot,
-      diagnostics: {
-        sampleSize: 0,
-        tuningReadiness: 'low',
-        primaryIssue: 'insufficient_data',
-        message: '样本量不足，先累计一轮稳定流量，再做线上调参。',
-        rankedRejectRate: 0,
-        followUpEnrichmentRate: 0,
-        recallShardHitRate: 0,
-        recallShardMissRate: 0
-      },
-      recommendations: []
+      diagnostics: l2Diagnostics,
+      recommendations: l2Recommendations
     },
     l3: {
-      enabled: config.openaiCache?.l3?.enabled !== false,
-      bypassReasons: [],
-      counters: {
-        cache_hit_exact: 0,
-        cache_miss: 0,
-        cache_bypass: 0,
-        cache_write: 0
-      },
+      enabled: l3Enabled,
+      bypassReasons: l3BypassReasons,
+      counters: l3Counters,
       totals: {
-        lookups: 0,
-        requests: 0
+        lookups: l3Lookups,
+        requests: l3Lookups + l3Counters.cache_bypass
       },
       rates: {
-        hitRate: 0
+        hitRate: calculateOpenAICacheRate(l3Counters.cache_hit_exact, l3Lookups)
       },
-      summary: {
-        cacheableRequests: 0,
-        bypassedRequests: 0,
-        participationRate: 0,
-        bypassRate: 0,
-        topBypassReason: null,
-        status: config.openaiCache?.l3?.enabled !== false ? 'enabled' : 'disabled'
-      }
+      summary: buildOpenAICacheSummary({
+        enabled: l3Enabled,
+        counters: l3Counters,
+        totals: {
+          lookups: l3Lookups,
+          requests: l3Lookups + l3Counters.cache_bypass
+        },
+        bypassReasons: l3BypassReasons
+      })
     }
   }
+}
+
+function buildOpenAICacheScopeEnvelope({ cumulativeMetrics, sinceProcessStartMetrics }) {
+  const baselineAvailable = !!openAICacheMetricsRuntime.baselineCapturedAt
+  const primary = baselineAvailable ? 'sinceProcessStart' : 'cumulative'
+
+  return {
+    scope: {
+      primary,
+      primaryLabel: primary === 'sinceProcessStart' ? '本次进程' : '累计历史',
+      baselineAvailable,
+      processStartedAt: openAICacheMetricsRuntime.processStartedAt,
+      baselineCapturedAt: openAICacheMetricsRuntime.baselineCapturedAt,
+      note: baselineAvailable
+        ? '默认按本次进程观察，累计历史只保留作长期参考。'
+        : '当前缺少启动基线，暂时只能回退到累计历史口径。'
+    },
+    l1: {
+      ...cumulativeMetrics.l1,
+      cumulative: cumulativeMetrics.l1,
+      sinceProcessStart: sinceProcessStartMetrics.l1
+    },
+    l2: {
+      ...cumulativeMetrics.l2,
+      cumulative: cumulativeMetrics.l2,
+      sinceProcessStart: sinceProcessStartMetrics.l2
+    },
+    l3: {
+      ...cumulativeMetrics.l3,
+      cumulative: cumulativeMetrics.l3,
+      sinceProcessStart: sinceProcessStartMetrics.l3
+    }
+  }
+}
+
+redisClient.initializeOpenAICacheMetricsBaseline = async function () {
+  try {
+    const client = this.getClient()
+    if (!client) {
+      return false
+    }
+
+    const rawMetricsByLayer = await readOpenAICacheRawMetricsByLayer(client)
+    openAICacheMetricsRuntime.baselineRawMetricsByLayer = {
+      l1: cloneOpenAICacheRawMetrics(rawMetricsByLayer.l1),
+      l2: cloneOpenAICacheRawMetrics(rawMetricsByLayer.l2),
+      l3: cloneOpenAICacheRawMetrics(rawMetricsByLayer.l3)
+    }
+    openAICacheMetricsRuntime.baselineCapturedAt = new Date().toISOString()
+    return true
+  } catch (error) {
+    logger.warn('Failed to capture OpenAI cache metrics baseline:', error.message)
+    return false
+  }
+}
+
+redisClient.getOpenAICacheMetrics = async function () {
+  const l2ConfigSnapshot = buildOpenAIL2ConfigSnapshot()
+  const emptyMetrics = buildOpenAICacheMetricsFromRaw({ l2ConfigSnapshot })
+  const defaultMetrics = buildOpenAICacheScopeEnvelope({
+    cumulativeMetrics: emptyMetrics,
+    sinceProcessStartMetrics: emptyMetrics
+  })
 
   try {
     const client = this.getClient()
@@ -4608,141 +4767,28 @@ redisClient.getOpenAICacheMetrics = async function () {
       return defaultMetrics
     }
 
-    const [l1RawMetrics, l2RawMetrics, l3RawMetrics] = await Promise.all([
-      client.hgetall('metrics:openai:l1'),
-      client.hgetall('metrics:openai:l2'),
-      client.hgetall('metrics:openai:l3')
-    ])
-
-    const l1Counters = buildOpenAICacheMetricCounters(l1RawMetrics, [
-      'cache_hit_exact',
-      'cache_miss',
-      'cache_bypass',
-      'cache_write'
-    ])
-    const l2Counters = buildOpenAICacheMetricCounters(l2RawMetrics, [
-      'cache_hit_semantic',
-      'cache_miss',
-      'cache_bypass',
-      'cache_write',
-      'cache_reject_ranked',
-      'embedding_hit',
-      'embedding_miss',
-      'followup_enriched',
-      'recall_lookup',
-      'recall_shard_hit',
-      'recall_shard_miss'
-    ])
-    const l3Counters = buildOpenAICacheMetricCounters(l3RawMetrics, [
-      'cache_hit_exact',
-      'cache_miss',
-      'cache_bypass',
-      'cache_write'
-    ])
-    const l1BypassReasons = buildOpenAICacheBypassReasons(l1RawMetrics)
-    const l2BypassReasons = buildOpenAICacheBypassReasons(l2RawMetrics)
-    const l3BypassReasons = buildOpenAICacheBypassReasons(l3RawMetrics)
-
-    const l1Lookups = l1Counters.cache_hit_exact + l1Counters.cache_miss
-    const l2Lookups = l2Counters.cache_hit_semantic + l2Counters.cache_miss
-    const l2EmbeddingRequests = l2Counters.embedding_hit + l2Counters.embedding_miss
-    const l3Lookups = l3Counters.cache_hit_exact + l3Counters.cache_miss
-    const l2Summary = buildOpenAICacheSummary({
-      enabled: defaultMetrics.l2.enabled,
-      counters: l2Counters,
-      totals: {
-        lookups: l2Lookups,
-        requests: l2Lookups + l2Counters.cache_bypass
-      },
-      bypassReasons: l2BypassReasons
+    const rawMetricsByLayer = await readOpenAICacheRawMetricsByLayer(client)
+    const cumulativeMetrics = buildOpenAICacheMetricsFromRaw({
+      rawMetricsByLayer,
+      l2ConfigSnapshot
     })
-    const l2Rates = {
-      semanticHitRate: calculateOpenAICacheRate(l2Counters.cache_hit_semantic, l2Lookups),
-      embeddingHitRate: calculateOpenAICacheRate(l2Counters.embedding_hit, l2EmbeddingRequests),
-      rankedRejectRate: calculateOpenAICacheRate(l2Counters.cache_reject_ranked, l2Lookups),
-      followUpEnrichmentRate: calculateOpenAICacheRate(l2Counters.followup_enriched, l2Lookups),
-      recallShardHitRate: calculateOpenAICacheRate(
-        l2Counters.recall_shard_hit,
-        l2Counters.recall_lookup
-      )
-    }
-    const l2Totals = {
-      lookups: l2Lookups,
-      requests: l2Lookups + l2Counters.cache_bypass,
-      embeddingRequests: l2EmbeddingRequests
-    }
-    const l2Diagnostics = buildOpenAIL2Diagnostics({
-      enabled: defaultMetrics.l2.enabled,
-      counters: l2Counters,
-      totals: l2Totals,
-      rates: l2Rates,
-      summary: l2Summary
-    })
-    const l2Recommendations = buildOpenAIL2Recommendations({
-      enabled: defaultMetrics.l2.enabled,
-      counters: l2Counters,
-      totals: l2Totals,
-      rates: l2Rates,
-      summary: l2Summary,
-      configSnapshot: l2ConfigSnapshot,
-      diagnostics: l2Diagnostics
+    const baselineRawMetricsByLayer = openAICacheMetricsRuntime.baselineRawMetricsByLayer
+    const sinceProcessStartRawMetrics = openAICacheMetricsRuntime.baselineCapturedAt
+      ? {
+          l1: subtractOpenAICacheRawMetrics(rawMetricsByLayer.l1, baselineRawMetricsByLayer.l1),
+          l2: subtractOpenAICacheRawMetrics(rawMetricsByLayer.l2, baselineRawMetricsByLayer.l2),
+          l3: subtractOpenAICacheRawMetrics(rawMetricsByLayer.l3, baselineRawMetricsByLayer.l3)
+        }
+      : {}
+    const sinceProcessStartMetrics = buildOpenAICacheMetricsFromRaw({
+      rawMetricsByLayer: sinceProcessStartRawMetrics,
+      l2ConfigSnapshot
     })
 
-    return {
-      l1: {
-        ...defaultMetrics.l1,
-        bypassReasons: l1BypassReasons,
-        counters: l1Counters,
-        totals: {
-          lookups: l1Lookups,
-          requests: l1Lookups + l1Counters.cache_bypass
-        },
-        rates: {
-          hitRate: calculateOpenAICacheRate(l1Counters.cache_hit_exact, l1Lookups)
-        },
-        summary: buildOpenAICacheSummary({
-          enabled: defaultMetrics.l1.enabled,
-          counters: l1Counters,
-          totals: {
-            lookups: l1Lookups,
-            requests: l1Lookups + l1Counters.cache_bypass
-          },
-          bypassReasons: l1BypassReasons
-        })
-      },
-      l2: {
-        ...defaultMetrics.l2,
-        bypassReasons: l2BypassReasons,
-        counters: l2Counters,
-        totals: l2Totals,
-        rates: l2Rates,
-        summary: l2Summary,
-        configSnapshot: l2ConfigSnapshot,
-        diagnostics: l2Diagnostics,
-        recommendations: l2Recommendations
-      },
-      l3: {
-        ...defaultMetrics.l3,
-        bypassReasons: l3BypassReasons,
-        counters: l3Counters,
-        totals: {
-          lookups: l3Lookups,
-          requests: l3Lookups + l3Counters.cache_bypass
-        },
-        rates: {
-          hitRate: calculateOpenAICacheRate(l3Counters.cache_hit_exact, l3Lookups)
-        },
-        summary: buildOpenAICacheSummary({
-          enabled: defaultMetrics.l3.enabled,
-          counters: l3Counters,
-          totals: {
-            lookups: l3Lookups,
-            requests: l3Lookups + l3Counters.cache_bypass
-          },
-          bypassReasons: l3BypassReasons
-        })
-      }
-    }
+    return buildOpenAICacheScopeEnvelope({
+      cumulativeMetrics,
+      sinceProcessStartMetrics
+    })
   } catch (error) {
     logger.error('Failed to collect OpenAI cache metrics:', error)
     return defaultMetrics

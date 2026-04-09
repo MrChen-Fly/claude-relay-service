@@ -10,10 +10,11 @@ const redis = require('../src/models/redis')
 const config = require('../config/config')
 
 describe('redis.getOpenAICacheMetrics', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     jest.clearAllMocks()
     config.openaiCache = {
       ...(config.openaiCache || {}),
+      enabled: true,
       l2: {
         ...(config.openaiCache?.l2 || {}),
         enabled: true,
@@ -25,11 +26,38 @@ describe('redis.getOpenAICacheMetrics', () => {
         enabled: true
       }
     }
+
+    const resetBaselineHgetall = jest.fn().mockResolvedValue({})
+    redis.getClient = jest.fn(() => ({ hgetall: resetBaselineHgetall }))
+    await redis.initializeOpenAICacheMetricsBaseline()
   })
 
-  it('aggregates raw L1, L2, and L3 counters into dashboard-friendly metrics', async () => {
+  it('aggregates raw counters and exposes cumulative plus since-process-start views', async () => {
     const hgetall = jest
       .fn()
+      .mockResolvedValueOnce({
+        cache_hit_exact: '2',
+        cache_miss: '1',
+        cache_bypass: '1',
+        cache_write: '1',
+        'bypass_reason:stream_request': '1'
+      })
+      .mockResolvedValueOnce({
+        cache_hit_semantic: '4',
+        cache_miss: '4',
+        cache_bypass: '1',
+        cache_write: '1',
+        embedding_hit: '2',
+        embedding_miss: '1',
+        'bypass_reason:stream_request': '1'
+      })
+      .mockResolvedValueOnce({
+        cache_hit_exact: '1',
+        cache_miss: '1',
+        cache_bypass: '1',
+        cache_write: '0',
+        'bypass_reason:temperature_too_high': '1'
+      })
       .mockResolvedValueOnce({
         cache_hit_exact: '12',
         cache_miss: '8',
@@ -58,99 +86,114 @@ describe('redis.getOpenAICacheMetrics', () => {
 
     redis.getClient = jest.fn(() => ({ hgetall }))
 
+    await redis.initializeOpenAICacheMetricsBaseline()
     const metrics = await redis.getOpenAICacheMetrics()
 
     expect(hgetall).toHaveBeenCalledWith('metrics:openai:l1')
     expect(hgetall).toHaveBeenCalledWith('metrics:openai:l2')
     expect(hgetall).toHaveBeenCalledWith('metrics:openai:l3')
-    expect(metrics).toEqual({
-      l1: {
-        enabled: true,
-        bypassReasons: [
-          { reason: 'stream_request', count: 2 },
-          { reason: 'dynamic_tools', count: 1 }
-        ],
-        counters: {
-          cache_hit_exact: 12,
-          cache_miss: 8,
-          cache_bypass: 3,
-          cache_write: 7
-        },
-        totals: {
-          lookups: 20,
-          requests: 23
-        },
-        rates: {
-          hitRate: 0.6
-        },
-        summary: {
-          cacheableRequests: 20,
-          bypassedRequests: 3,
-          participationRate: 0.8696,
-          bypassRate: 0.1304,
-          topBypassReason: { reason: 'stream_request', count: 2 },
-          status: 'enabled'
-        }
-      },
-      l2: {
-        enabled: true,
-        embeddingModel: 'BAAI/bge-m3',
-        similarityThreshold: 0.95,
-        bypassReasons: [
-          { reason: 'stream_request', count: 1 },
-          { reason: 'structured_output_request', count: 1 }
-        ],
-        counters: {
-          cache_hit_semantic: 10,
-          cache_miss: 10,
-          cache_bypass: 2,
-          cache_write: 5,
-          embedding_hit: 9,
-          embedding_miss: 3
-        },
-        totals: {
-          lookups: 20,
-          requests: 22,
-          embeddingRequests: 12
-        },
-        rates: {
-          semanticHitRate: 0.5,
-          embeddingHitRate: 0.75
-        },
-        summary: {
-          cacheableRequests: 20,
-          bypassedRequests: 2,
-          participationRate: 0.9091,
-          bypassRate: 0.0909,
-          topBypassReason: { reason: 'stream_request', count: 1 },
-          status: 'enabled'
-        }
-      },
-      l3: {
-        enabled: true,
-        bypassReasons: [{ reason: 'temperature_too_high', count: 2 }],
-        counters: {
-          cache_hit_exact: 4,
-          cache_miss: 6,
-          cache_bypass: 2,
-          cache_write: 3
-        },
-        totals: {
-          lookups: 10,
-          requests: 12
-        },
-        rates: {
-          hitRate: 0.4
-        },
-        summary: {
-          cacheableRequests: 10,
-          bypassedRequests: 2,
-          participationRate: 0.8333,
-          bypassRate: 0.1667,
-          topBypassReason: { reason: 'temperature_too_high', count: 2 },
-          status: 'enabled'
-        }
-      }
+    expect(metrics.scope).toEqual(
+      expect.objectContaining({
+        primary: 'sinceProcessStart',
+        primaryLabel: '本次进程',
+        baselineAvailable: true
+      })
+    )
+
+    expect(metrics.l1.counters).toEqual({
+      cache_hit_exact: 12,
+      cache_miss: 8,
+      cache_bypass: 3,
+      cache_write: 7
+    })
+    expect(metrics.l1.summary).toEqual({
+      cacheableRequests: 20,
+      bypassedRequests: 3,
+      participationRate: 0.8696,
+      bypassRate: 0.1304,
+      topBypassReason: { reason: 'stream_request', count: 2 },
+      status: 'enabled'
+    })
+    expect(metrics.l1.sinceProcessStart.counters).toEqual({
+      cache_hit_exact: 10,
+      cache_miss: 7,
+      cache_bypass: 2,
+      cache_write: 6
+    })
+    expect(metrics.l1.sinceProcessStart.bypassReasons).toEqual([
+      { reason: 'dynamic_tools', count: 1 },
+      { reason: 'stream_request', count: 1 }
+    ])
+    expect(metrics.l1.sinceProcessStart.summary).toEqual({
+      cacheableRequests: 17,
+      bypassedRequests: 2,
+      participationRate: 0.8947,
+      bypassRate: 0.1053,
+      topBypassReason: { reason: 'dynamic_tools', count: 1 },
+      status: 'enabled'
+    })
+
+    expect(metrics.l2.counters).toEqual({
+      cache_hit_semantic: 10,
+      cache_miss: 10,
+      cache_bypass: 2,
+      cache_write: 5,
+      cache_reject_ranked: 0,
+      embedding_hit: 9,
+      embedding_miss: 3,
+      followup_enriched: 0,
+      recall_lookup: 0,
+      recall_shard_hit: 0,
+      recall_shard_miss: 0
+    })
+    expect(metrics.l2.rates).toEqual({
+      semanticHitRate: 0.5,
+      embeddingHitRate: 0.75,
+      rankedRejectRate: 0,
+      followUpEnrichmentRate: 0,
+      recallShardHitRate: 0
+    })
+    expect(metrics.l2.sinceProcessStart.counters).toEqual({
+      cache_hit_semantic: 6,
+      cache_miss: 6,
+      cache_bypass: 1,
+      cache_write: 4,
+      cache_reject_ranked: 0,
+      embedding_hit: 7,
+      embedding_miss: 2,
+      followup_enriched: 0,
+      recall_lookup: 0,
+      recall_shard_hit: 0,
+      recall_shard_miss: 0
+    })
+    expect(metrics.l2.sinceProcessStart.summary).toEqual({
+      cacheableRequests: 12,
+      bypassedRequests: 1,
+      participationRate: 0.9231,
+      bypassRate: 0.0769,
+      topBypassReason: { reason: 'structured_output_request', count: 1 },
+      status: 'enabled'
+    })
+
+    expect(metrics.l3.counters).toEqual({
+      cache_hit_exact: 4,
+      cache_miss: 6,
+      cache_bypass: 2,
+      cache_write: 3
+    })
+    expect(metrics.l3.sinceProcessStart.counters).toEqual({
+      cache_hit_exact: 3,
+      cache_miss: 5,
+      cache_bypass: 1,
+      cache_write: 3
+    })
+    expect(metrics.l3.sinceProcessStart.summary).toEqual({
+      cacheableRequests: 8,
+      bypassedRequests: 1,
+      participationRate: 0.8889,
+      bypassRate: 0.1111,
+      topBypassReason: { reason: 'temperature_too_high', count: 1 },
+      status: 'enabled'
     })
   })
 
@@ -161,10 +204,13 @@ describe('redis.getOpenAICacheMetrics', () => {
 
     expect(metrics.l1.counters.cache_hit_exact).toBe(0)
     expect(metrics.l1.bypassReasons).toEqual([])
+    expect(metrics.l1.sinceProcessStart.counters.cache_hit_exact).toBe(0)
     expect(metrics.l2.counters.cache_hit_semantic).toBe(0)
     expect(metrics.l2.bypassReasons).toEqual([])
+    expect(metrics.l2.sinceProcessStart.counters.cache_hit_semantic).toBe(0)
     expect(metrics.l3.counters.cache_hit_exact).toBe(0)
     expect(metrics.l3.bypassReasons).toEqual([])
+    expect(metrics.l3.sinceProcessStart.counters.cache_hit_exact).toBe(0)
     expect(metrics.l2.enabled).toBe(true)
     expect(metrics.l3.enabled).toBe(true)
   })

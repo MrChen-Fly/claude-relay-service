@@ -4,123 +4,163 @@ import { ref, computed } from 'vue'
 import { getDashboardApi, getUsageCostsApi, getUsageStatsApi } from '@/utils/http_apis'
 import { showToast } from '@/utils/tools'
 
-export function createDefaultCacheMetrics() {
+function createDefaultCacheScope() {
   return {
-    l1: {
-      enabled: true,
-      bypassReasons: [],
-      counters: {
-        cache_hit_exact: 0,
-        cache_miss: 0,
-        cache_bypass: 0,
-        cache_write: 0
-      },
-      totals: {
-        lookups: 0,
-        requests: 0
-      },
-      rates: {
-        hitRate: 0
-      },
-      summary: {
-        cacheableRequests: 0,
-        bypassedRequests: 0,
-        participationRate: 0,
-        bypassRate: 0,
-        topBypassReason: null,
-        status: 'enabled'
-      }
+    primary: 'cumulative',
+    primaryLabel: '累计历史',
+    baselineAvailable: false,
+    processStartedAt: null,
+    baselineCapturedAt: null,
+    note: '当前缺少启动基线，暂时只能回退到累计历史口径。'
+  }
+}
+
+function createDefaultL1CacheLayer() {
+  return {
+    enabled: true,
+    bypassReasons: [],
+    counters: {
+      cache_hit_exact: 0,
+      cache_miss: 0,
+      cache_bypass: 0,
+      cache_write: 0
     },
-    l2: {
-      enabled: true,
+    totals: {
+      lookups: 0,
+      requests: 0
+    },
+    rates: {
+      hitRate: 0
+    },
+    summary: {
+      cacheableRequests: 0,
+      bypassedRequests: 0,
+      participationRate: 0,
+      bypassRate: 0,
+      topBypassReason: null,
+      status: 'enabled'
+    }
+  }
+}
+
+function createDefaultL2CacheLayer() {
+  return {
+    enabled: true,
+    embeddingModel: 'text-embedding-3-small',
+    similarityThreshold: 0.95,
+    bypassReasons: [],
+    counters: {
+      cache_hit_semantic: 0,
+      cache_miss: 0,
+      cache_bypass: 0,
+      cache_write: 0,
+      cache_reject_ranked: 0,
+      embedding_hit: 0,
+      embedding_miss: 0,
+      followup_enriched: 0,
+      recall_lookup: 0,
+      recall_shard_hit: 0,
+      recall_shard_miss: 0
+    },
+    totals: {
+      lookups: 0,
+      requests: 0,
+      embeddingRequests: 0
+    },
+    rates: {
+      semanticHitRate: 0,
+      embeddingHitRate: 0,
+      rankedRejectRate: 0,
+      followUpEnrichmentRate: 0,
+      recallShardHitRate: 0
+    },
+    summary: {
+      cacheableRequests: 0,
+      bypassedRequests: 0,
+      participationRate: 0,
+      bypassRate: 0,
+      topBypassReason: null,
+      status: 'enabled'
+    },
+    configSnapshot: {
       embeddingModel: 'text-embedding-3-small',
       similarityThreshold: 0.95,
-      bypassReasons: [],
-      counters: {
-        cache_hit_semantic: 0,
-        cache_miss: 0,
-        cache_bypass: 0,
-        cache_write: 0,
-        cache_reject_ranked: 0,
-        embedding_hit: 0,
-        embedding_miss: 0,
-        followup_enriched: 0,
-        recall_lookup: 0,
-        recall_shard_hit: 0,
-        recall_shard_miss: 0
-      },
-      totals: {
-        lookups: 0,
-        requests: 0,
-        embeddingRequests: 0
-      },
-      rates: {
-        semanticHitRate: 0,
-        embeddingHitRate: 0,
-        rankedRejectRate: 0,
-        followUpEnrichmentRate: 0,
-        recallShardHitRate: 0
-      },
-      summary: {
-        cacheableRequests: 0,
-        bypassedRequests: 0,
-        participationRate: 0,
-        bypassRate: 0,
-        topBypassReason: null,
-        status: 'enabled'
-      },
-      configSnapshot: {
-        embeddingModel: 'text-embedding-3-small',
-        similarityThreshold: 0.95,
-        rankAcceptanceThreshold: 0.9,
-        recallTokenLimit: 6,
-        recallPerTokenLimit: 12,
-        recallRecentLimit: 20,
-        recallTotalLimit: 60,
-        maxCandidates: 20,
-        maxIndexedEntries: 200,
-        entryTtlSeconds: 604800,
-        embeddingTtlSeconds: 2592000,
-        contextBufferEnabled: true,
-        contextBufferMaxItems: 6,
-        contextBufferTtlSeconds: 604800
-      },
-      diagnostics: {
-        sampleSize: 0,
-        tuningReadiness: 'low',
-        primaryIssue: 'insufficient_data',
-        message: '样本量不足，先累计一轮稳定流量，再做线上调参。',
-        rankedRejectRate: 0,
-        followUpEnrichmentRate: 0,
-        recallShardHitRate: 0,
-        recallShardMissRate: 0
-      },
-      recommendations: []
+      rankAcceptanceThreshold: 0.9,
+      recallTokenLimit: 6,
+      recallPerTokenLimit: 12,
+      recallRecentLimit: 20,
+      recallTotalLimit: 60,
+      maxCandidates: 20,
+      maxIndexedEntries: 200,
+      entryTtlSeconds: 604800,
+      embeddingTtlSeconds: 2592000,
+      contextBufferEnabled: true,
+      contextBufferMaxItems: 6,
+      contextBufferTtlSeconds: 604800
+    },
+    diagnostics: {
+      sampleSize: 0,
+      tuningReadiness: 'low',
+      primaryIssue: 'insufficient_data',
+      message: '样本量不足，先累计一轮稳定流量，再做线上调参。',
+      rankedRejectRate: 0,
+      followUpEnrichmentRate: 0,
+      recallShardHitRate: 0,
+      recallShardMissRate: 0
+    },
+    recommendations: []
+  }
+}
+
+function createDefaultL3CacheLayer() {
+  return {
+    enabled: true,
+    bypassReasons: [],
+    counters: {
+      cache_hit_exact: 0,
+      cache_miss: 0,
+      cache_bypass: 0,
+      cache_write: 0
+    },
+    totals: {
+      lookups: 0,
+      requests: 0
+    },
+    rates: {
+      hitRate: 0
+    },
+    summary: {
+      cacheableRequests: 0,
+      bypassedRequests: 0,
+      participationRate: 0,
+      bypassRate: 0,
+      topBypassReason: null,
+      status: 'enabled'
+    }
+  }
+}
+
+export function createDefaultCacheMetrics() {
+  const l1 = createDefaultL1CacheLayer()
+  const l2 = createDefaultL2CacheLayer()
+  const l3 = createDefaultL3CacheLayer()
+
+  return {
+    scope: createDefaultCacheScope(),
+    l1: {
+      ...l1,
+      cumulative: createDefaultL1CacheLayer(),
+      sinceProcessStart: createDefaultL1CacheLayer()
+    },
+    l2: {
+      ...l2,
+      cumulative: createDefaultL2CacheLayer(),
+      sinceProcessStart: createDefaultL2CacheLayer()
     },
     l3: {
-      enabled: true,
-      bypassReasons: [],
-      counters: {
-        cache_hit_exact: 0,
-        cache_miss: 0,
-        cache_bypass: 0,
-        cache_write: 0
-      },
-      totals: {
-        lookups: 0,
-        requests: 0
-      },
-      rates: {
-        hitRate: 0
-      },
-      summary: {
-        cacheableRequests: 0,
-        bypassedRequests: 0,
-        participationRate: 0,
-        bypassRate: 0,
-        topBypassReason: null,
-        status: 'enabled'
-      }
+      ...l3,
+      cumulative: createDefaultL3CacheLayer(),
+      sinceProcessStart: createDefaultL3CacheLayer()
     }
   }
 }

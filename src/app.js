@@ -52,6 +52,7 @@ class Application {
       logger.info('🔄 Connecting to Redis...')
       await redis.connect()
       logger.success('Redis connected successfully')
+      await redis.initializeOpenAICacheMetricsBaseline()
 
       // 📊 检查数据迁移（版本 > 1.1.250 时执行）
       const { getAppVersion, versionGt } = require('./utils/commonHelper')
