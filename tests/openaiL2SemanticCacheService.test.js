@@ -13,7 +13,8 @@ jest.mock('../src/models/redis', () => ({
   getOpenAIL2CandidateKeys: jest.fn(),
   getOpenAIL2HybridCandidateKeys: jest.fn(),
   incrementOpenAIL2CacheMetric: jest.fn(),
-  incrementOpenAIL2CacheBypassReason: jest.fn()
+  incrementOpenAIL2CacheBypassReason: jest.fn(),
+  incrementOpenAIL2CacheStoreSkipReason: jest.fn()
 }))
 jest.mock('../src/utils/logger', () => ({
   debug: jest.fn(),
@@ -746,9 +747,13 @@ describe('openaiL2SemanticCacheService', () => {
       }
     )
 
-    expect(result).toEqual({ stored: false })
+    expect(result).toEqual({ stored: false, reason: 'response_has_tool_calls' })
     expect(redis.setOpenAIL2Entry).not.toHaveBeenCalled()
     expect(redis.addOpenAIL2IndexEntry).not.toHaveBeenCalled()
+    expect(redis.incrementOpenAIL2CacheMetric).toHaveBeenCalledWith('cache_store_skip')
+    expect(redis.incrementOpenAIL2CacheStoreSkipReason).toHaveBeenCalledWith(
+      'response_has_tool_calls'
+    )
   })
 
   it('rejects borderline semantic hits when context ranking falls below the acceptance threshold', async () => {

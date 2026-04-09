@@ -1,3 +1,5 @@
+const { extractUserTextsFromCanonicalRequest } = require('../openaiCacheCanonicalizer')
+
 function clampScore(value) {
   if (!Number.isFinite(value)) {
     return 0
@@ -95,6 +97,59 @@ function getContextAlignment(plan = {}, candidate = {}) {
   return plan.contextFingerprint === candidateFingerprint ? 1 : -1
 }
 
+function getRecentUserTurns(text = '', limit = 3) {
+  if (typeof text !== 'string' || !text.trim()) {
+    return []
+  }
+
+  return extractUserTextsFromCanonicalRequest(text).slice(-limit)
+}
+
+function reweightSequenceWeights(weights = [], length = 0) {
+  const activeWeights = weights.slice(0, length)
+  const totalWeight = activeWeights.reduce((sum, weight) => sum + weight, 0)
+  if (totalWeight <= 0) {
+    return activeWeights.map(() => 0)
+  }
+
+  return activeWeights.map((weight) => weight / totalWeight)
+}
+
+function getSequenceTurnMatchScore(left = '', right = '') {
+  if (!left || !right) {
+    return 0
+  }
+
+  const normalizedLeft = left.trim().toLowerCase()
+  const normalizedRight = right.trim().toLowerCase()
+  if (normalizedLeft && normalizedLeft === normalizedRight) {
+    return 1
+  }
+
+  return clampScore(getTokenOverlapScore(left, right) * 0.75 + getTextLengthRatio(left, right) * 0.25)
+}
+
+function getSequenceMatchScore(currentRequestText = '', candidateRequestText = '') {
+  const currentTurns = getRecentUserTurns(currentRequestText)
+  const candidateTurns = getRecentUserTurns(candidateRequestText)
+  const length = Math.min(currentTurns.length, candidateTurns.length, 3)
+
+  if (length < 2) {
+    return 0
+  }
+
+  const weights = reweightSequenceWeights([0.58, 0.3, 0.12], length)
+  let score = 0
+
+  for (let index = 0; index < length; index += 1) {
+    const currentTurn = currentTurns[currentTurns.length - 1 - index]
+    const candidateTurn = candidateTurns[candidateTurns.length - 1 - index]
+    score += getSequenceTurnMatchScore(currentTurn, candidateTurn) * weights[index]
+  }
+
+  return clampScore(score)
+}
+
 function evaluateCandidate({
   plan = {},
   queryEmbedding = [],
@@ -103,19 +158,24 @@ function evaluateCandidate({
   embedding = []
 }) {
   const similarity = cosineSimilarity(queryEmbedding, embedding)
-  const focalText = entry.requestFocalText || entry.requestText || ''
+  const focalText = entry.requestFocalText || getRecentUserTurns(entry.requestText, 1)[0] || entry.requestText || ''
   const focalLengthRatio = getTextLengthRatio(plan.queryText, focalText)
   const fullLengthRatio = getTextLengthRatio(plan.requestText || plan.queryText, entry.requestText)
   const focalOverlapScore = getTokenOverlapScore(plan.queryText, focalText)
   const recencyScore = getRecencyScore(entry.meta?.createdAt)
   const contextAlignment = getContextAlignment(plan, entry)
+  const sequenceMatchScore = getSequenceMatchScore(
+    plan.requestText || plan.queryText,
+    entry.requestText || focalText
+  )
 
   let score =
-    similarity * 0.8 +
-    focalLengthRatio * 0.06 +
+    similarity * 0.75 +
+    focalLengthRatio * 0.05 +
     fullLengthRatio * 0.04 +
-    focalOverlapScore * 0.07 +
-    recencyScore * 0.03
+    focalOverlapScore * 0.05 +
+    recencyScore * 0.02 +
+    sequenceMatchScore * 0.06
   score += contextAlignment * 0.03
 
   if (entry.provider && plan.provider && entry.provider !== plan.provider) {
@@ -132,7 +192,7 @@ function evaluateCandidate({
 
   score = clampScore(score)
 
-  const hasContextConflict = contextAlignment < 0
+  const hasContextConflict = contextAlignment < 0 && sequenceMatchScore < 0.45
   const strictSimilarityFloor = Math.max((plan.similarityThreshold || 0.95) + 0.02, 0.98)
   const accepted =
     similarity >= (plan.similarityThreshold || 0.95) &&
@@ -151,7 +211,8 @@ function evaluateCandidate({
       fullLengthRatio,
       focalOverlapScore,
       recencyScore,
-      contextAlignment
+      contextAlignment,
+      sequenceMatchScore
     }
   }
 }

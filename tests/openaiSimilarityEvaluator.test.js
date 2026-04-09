@@ -15,7 +15,8 @@ describe('similarityEvaluator', () => {
         model: 'gpt-5',
         provider: 'openai-responses',
         endpoint: 'responses',
-        queryText: 'user: hello world',
+        queryText: 'hello world',
+        requestText: 'user: hello world',
         similarityThreshold: 0.95,
         rankAcceptanceThreshold: 0.9,
         contextFingerprint: 'ctx-match'
@@ -28,6 +29,7 @@ describe('similarityEvaluator', () => {
             model: 'gpt-5',
             provider: 'openai-responses',
             endpoint: 'responses',
+            requestFocalText: 'hello world',
             requestText: 'user: hello world',
             contextFingerprint: 'ctx-other',
             meta: { createdAt: new Date().toISOString() }
@@ -40,6 +42,7 @@ describe('similarityEvaluator', () => {
             model: 'gpt-5',
             provider: 'openai-responses',
             endpoint: 'responses',
+            requestFocalText: 'hello world',
             requestText: 'user: hello world',
             contextFingerprint: 'ctx-match',
             meta: { createdAt: new Date().toISOString() }
@@ -59,7 +62,8 @@ describe('similarityEvaluator', () => {
         model: 'gpt-5',
         provider: 'openai-responses',
         endpoint: 'responses',
-        queryText: 'user: hello world',
+        queryText: 'hello world',
+        requestText: 'user: hello world',
         similarityThreshold: 0.95,
         rankAcceptanceThreshold: 0.9,
         contextFingerprint: 'ctx-a'
@@ -72,6 +76,7 @@ describe('similarityEvaluator', () => {
             model: 'gpt-5',
             provider: 'openai-responses',
             endpoint: 'responses',
+            requestFocalText: 'hello world',
             requestText: 'user: hello world',
             contextFingerprint: 'ctx-b',
             meta: { createdAt: new Date().toISOString() }
@@ -85,5 +90,42 @@ describe('similarityEvaluator', () => {
     expect(result.best.entryKey).toBe('entry-conflict')
     expect(result.best.hasContextConflict).toBe(true)
     expect(result.best.score).toBeLessThan(0.9)
+  })
+
+  it('uses recent user-turn sequence match to soften false context conflicts in multi-turn chats', () => {
+    const result = rankCandidates({
+      plan: {
+        model: 'gpt-5',
+        provider: 'openai-responses',
+        endpoint: 'responses',
+        queryText: '继续优化缓存命中率',
+        requestText:
+          'system: You are helpful\nuser: 重写缓存面板\nassistant: 已完成\nuser: 继续优化缓存命中率',
+        similarityThreshold: 0.95,
+        rankAcceptanceThreshold: 0.9,
+        contextFingerprint: 'ctx-current'
+      },
+      queryEmbedding: [1, 0],
+      candidates: [
+        {
+          entryKey: 'entry-sequence-match',
+          entry: {
+            model: 'gpt-5',
+            provider: 'openai-responses',
+            endpoint: 'responses',
+            requestFocalText: '继续优化缓存命中率',
+            requestText:
+              'system: You are helpful\nuser: 重写缓存面板\nassistant: 已完成\nuser: 继续优化缓存命中率',
+            contextFingerprint: 'ctx-older',
+            meta: { createdAt: new Date().toISOString() }
+          },
+          embedding: [0.955, 0.2966058]
+        }
+      ]
+    })
+
+    expect(result.accepted?.entryKey).toBe('entry-sequence-match')
+    expect(result.best.factors.sequenceMatchScore).toBeGreaterThan(0.9)
+    expect(result.best.hasContextConflict).toBe(false)
   })
 })

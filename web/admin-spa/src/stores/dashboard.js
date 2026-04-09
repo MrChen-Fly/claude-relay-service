@@ -49,11 +49,13 @@ function createDefaultL2CacheLayer() {
     embeddingModel: 'text-embedding-3-small',
     similarityThreshold: 0.95,
     bypassReasons: [],
+    storeSkipReasons: [],
     counters: {
       cache_hit_semantic: 0,
       cache_miss: 0,
       cache_bypass: 0,
       cache_write: 0,
+      cache_store_skip: 0,
       cache_reject_ranked: 0,
       embedding_hit: 0,
       embedding_miss: 0,
@@ -106,7 +108,9 @@ function createDefaultL2CacheLayer() {
       rankedRejectRate: 0,
       followUpEnrichmentRate: 0,
       recallShardHitRate: 0,
-      recallShardMissRate: 0
+      recallShardMissRate: 0,
+      storeSkipRate: 0,
+      topStoreSkipReason: null
     },
     recommendations: []
   }

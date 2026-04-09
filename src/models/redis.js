@@ -4221,6 +4221,15 @@ function buildOpenAICacheBypassReasonMetric(reason) {
   return `bypass_reason:${normalizedReason}`
 }
 
+function buildOpenAICacheStoreSkipReasonMetric(reason) {
+  const normalizedReason = normalizeOpenAICacheMetricSuffix(reason)
+  if (!normalizedReason) {
+    return null
+  }
+
+  return `store_skip_reason:${normalizedReason}`
+}
+
 function parseOpenAICacheMetricValue(value) {
   const parsed = parseInt(value, 10)
   return Number.isFinite(parsed) ? parsed : 0
@@ -4239,6 +4248,7 @@ const OPENAI_CACHE_LAYER_COUNTER_NAMES = {
     'cache_miss',
     'cache_bypass',
     'cache_write',
+    'cache_store_skip',
     'cache_reject_ranked',
     'embedding_hit',
     'embedding_miss',
@@ -4302,6 +4312,17 @@ function buildOpenAICacheBypassReasons(rawMetrics = {}) {
     .sort((left, right) => right.count - left.count || left.reason.localeCompare(right.reason))
 }
 
+function buildOpenAICacheStoreSkipReasons(rawMetrics = {}) {
+  return Object.entries(rawMetrics)
+    .filter(([metricName]) => metricName.startsWith('store_skip_reason:'))
+    .map(([metricName, value]) => ({
+      reason: metricName.slice('store_skip_reason:'.length),
+      count: parseOpenAICacheMetricValue(value)
+    }))
+    .filter(({ reason, count }) => reason && count > 0)
+    .sort((left, right) => right.count - left.count || left.reason.localeCompare(right.reason))
+}
+
 function calculateOpenAICacheRate(numerator, denominator) {
   if (!denominator) {
     return 0
@@ -4356,15 +4377,19 @@ function buildOpenAIL2Diagnostics({
   counters = {},
   totals = {},
   rates = {},
-  summary = {}
+  summary = {},
+  storeSkipReasons = []
 }) {
   const lookups = totals.lookups || 0
   const embeddingRequests = totals.embeddingRequests || 0
+  const misses = counters.cache_miss || 0
   const recallLookups = counters.recall_lookup || 0
   const rankedRejectRate = calculateOpenAICacheRate(counters.cache_reject_ranked || 0, lookups)
   const followUpEnrichmentRate = calculateOpenAICacheRate(counters.followup_enriched || 0, lookups)
   const recallShardHitRate = calculateOpenAICacheRate(counters.recall_shard_hit || 0, recallLookups)
   const recallShardMissRate = calculateOpenAICacheRate(counters.recall_shard_miss || 0, recallLookups)
+  const storeSkipRate = calculateOpenAICacheRate(counters.cache_store_skip || 0, misses)
+  const topStoreSkipReason = storeSkipReasons[0] || null
   const tuningReadiness = lookups >= 100 ? 'high' : lookups >= 30 ? 'medium' : 'low'
 
   let primaryIssue = 'insufficient_data'
@@ -4373,6 +4398,9 @@ function buildOpenAIL2Diagnostics({
   if (!enabled) {
     primaryIssue = 'disabled'
     message = 'L2 当前未启用，线上不会产生语义缓存收益。'
+  } else if (misses >= 5 && storeSkipRate >= 0.3 && topStoreSkipReason?.reason) {
+    primaryIssue = 'store_skip'
+    message = `Miss 后写入被频繁跳过，当前首先卡在 ${topStoreSkipReason.reason}。`
   } else if ((summary.participationRate || 0) < 0.35 && summary.topBypassReason?.reason) {
     primaryIssue = 'bypass'
     message = `可参与率偏低，当前首先被 ${summary.topBypassReason.reason} 阻塞。`
@@ -4401,7 +4429,9 @@ function buildOpenAIL2Diagnostics({
     rankedRejectRate,
     followUpEnrichmentRate,
     recallShardHitRate,
-    recallShardMissRate
+    recallShardMissRate,
+    storeSkipRate,
+    topStoreSkipReason
   }
 }
 
@@ -4445,6 +4475,23 @@ function buildOpenAIL2Recommendations({
   }
 
   const recommendations = []
+
+  if (
+    (counters.cache_miss || 0) >= 5 &&
+    (diagnostics.storeSkipRate || 0) >= 0.3 &&
+    diagnostics.topStoreSkipReason?.reason
+  ) {
+    recommendations.push({
+      id: 'investigate_store_skip_before_threshold',
+      priority: 'high',
+      title: '先处理 L2 写入跳过，再调召回或阈值',
+      summary: '当前不少 miss 没有成功沉淀到语义缓存，继续调阈值不会直接改善后续命中。',
+      params: [],
+      currentValue: `${counters.cache_store_skip || 0}/${counters.cache_miss || 0} miss 被跳过`,
+      suggestedValue: `优先检查 ${diagnostics.topStoreSkipReason.reason}`,
+      rationale: '如果 miss 后没有稳定写回，缓存池无法积累，命中率上限会被直接锁死。'
+    })
+  }
 
   if ((summary.participationRate || 0) < 0.35 && summary.topBypassReason?.reason) {
     recommendations.push({
@@ -4593,6 +4640,7 @@ function buildOpenAICacheMetricsFromRaw({
   )
   const l1BypassReasons = buildOpenAICacheBypassReasons(l1RawMetrics)
   const l2BypassReasons = buildOpenAICacheBypassReasons(l2RawMetrics)
+  const l2StoreSkipReasons = buildOpenAICacheStoreSkipReasons(l2RawMetrics)
   const l3BypassReasons = buildOpenAICacheBypassReasons(l3RawMetrics)
 
   const l1Lookups = l1Counters.cache_hit_exact + l1Counters.cache_miss
@@ -4628,7 +4676,8 @@ function buildOpenAICacheMetricsFromRaw({
     counters: l2Counters,
     totals: l2Totals,
     rates: l2Rates,
-    summary: l2Summary
+    summary: l2Summary,
+    storeSkipReasons: l2StoreSkipReasons
   })
   const l2Recommendations = buildOpenAIL2Recommendations({
     enabled: l2Enabled,
@@ -4667,6 +4716,7 @@ function buildOpenAICacheMetricsFromRaw({
       embeddingModel: l2ConfigSnapshot.embeddingModel,
       similarityThreshold: l2ConfigSnapshot.similarityThreshold,
       bypassReasons: l2BypassReasons,
+      storeSkipReasons: l2StoreSkipReasons,
       counters: l2Counters,
       totals: l2Totals,
       rates: l2Rates,
@@ -5141,6 +5191,15 @@ redisClient.incrementOpenAIL1CacheBypassReason = async function (reason) {
 
 redisClient.incrementOpenAIL2CacheBypassReason = async function (reason) {
   const metricName = buildOpenAICacheBypassReasonMetric(reason)
+  if (!metricName) {
+    return 0
+  }
+
+  return await this.incrementOpenAIL2CacheMetric(metricName)
+}
+
+redisClient.incrementOpenAIL2CacheStoreSkipReason = async function (reason) {
+  const metricName = buildOpenAICacheStoreSkipReasonMetric(reason)
   if (!metricName) {
     return 0
   }

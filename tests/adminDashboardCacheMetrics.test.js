@@ -170,11 +170,13 @@ describe('admin dashboard cache metrics', () => {
         embeddingModel: 'BAAI/bge-m3',
         similarityThreshold: 0.95,
         bypassReasons: [{ reason: 'structured_output_request', count: 2 }],
+        storeSkipReasons: [{ reason: 'response_has_tool_calls', count: 2 }],
         counters: {
           cache_hit_semantic: 3,
           cache_miss: 7,
           cache_bypass: 2,
           cache_write: 3,
+          cache_store_skip: 2,
           cache_reject_ranked: 2,
           embedding_hit: 4,
           embedding_miss: 1,
@@ -219,7 +221,9 @@ describe('admin dashboard cache metrics', () => {
           rankedRejectRate: 0.2,
           followUpEnrichmentRate: 0.2,
           recallShardHitRate: 0.3333,
-          recallShardMissRate: 0.6667
+          recallShardMissRate: 0.6667,
+          storeSkipRate: 0.2857,
+          topStoreSkipReason: { reason: 'response_has_tool_calls', count: 2 }
         },
         recommendations: [
           {
@@ -241,11 +245,13 @@ describe('admin dashboard cache metrics', () => {
           embeddingModel: 'BAAI/bge-m3',
           similarityThreshold: 0.95,
           bypassReasons: [{ reason: 'structured_output_request', count: 2 }],
+          storeSkipReasons: [{ reason: 'response_has_tool_calls', count: 2 }],
           counters: {
             cache_hit_semantic: 3,
             cache_miss: 7,
             cache_bypass: 2,
             cache_write: 3,
+            cache_store_skip: 2,
             cache_reject_ranked: 2,
             embedding_hit: 4,
             embedding_miss: 1,
@@ -272,11 +278,13 @@ describe('admin dashboard cache metrics', () => {
           embeddingModel: 'BAAI/bge-m3',
           similarityThreshold: 0.95,
           bypassReasons: [{ reason: 'structured_output_request', count: 1 }],
+          storeSkipReasons: [{ reason: 'response_has_tool_calls', count: 1 }],
           counters: {
             cache_hit_semantic: 2,
             cache_miss: 4,
             cache_bypass: 1,
             cache_write: 2,
+            cache_store_skip: 1,
             cache_reject_ranked: 1,
             embedding_hit: 3,
             embedding_miss: 1,
@@ -387,13 +395,15 @@ describe('admin dashboard cache metrics', () => {
         }),
         l2: expect.objectContaining({
           bypassReasons: [{ reason: 'structured_output_request', count: 2 }],
+          storeSkipReasons: [{ reason: 'response_has_tool_calls', count: 2 }],
           rates: expect.objectContaining({
             semanticHitRate: 0.3,
             embeddingHitRate: 0.8,
             rankedRejectRate: 0.2
           }),
           diagnostics: expect.objectContaining({
-            primaryIssue: 'threshold'
+            primaryIssue: 'threshold',
+            topStoreSkipReason: { reason: 'response_has_tool_calls', count: 2 }
           }),
           recommendations: [
             expect.objectContaining({
@@ -402,7 +412,8 @@ describe('admin dashboard cache metrics', () => {
           ],
           sinceProcessStart: expect.objectContaining({
             counters: expect.objectContaining({
-              cache_hit_semantic: 2
+              cache_hit_semantic: 2,
+              cache_store_skip: 1
             })
           })
         }),

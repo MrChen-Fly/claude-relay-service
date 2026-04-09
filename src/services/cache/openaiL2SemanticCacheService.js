@@ -15,7 +15,7 @@ const {
   getAlwaysDynamicRequestReason,
   isStructuredOutputRequest
 } = require('./openaiCacheCanonicalizer')
-const { logCacheBypassDetails } = require('./openaiCacheBypassDiagnostics')
+const { logCacheBypassDetails, logCacheStoreSkipDetails } = require('./openaiCacheBypassDiagnostics')
 
 const CACHE_VERSION = 'v1'
 const RESPONSE_HEADER_WHITELIST = [
@@ -294,6 +294,16 @@ async function incrementBypassMetrics(reason) {
   }
 
   await redis.incrementOpenAIL2CacheBypassReason(reason)
+}
+
+async function incrementStoreSkipMetrics(reason) {
+  await incrementMetric('cache_store_skip')
+
+  if (typeof redis.incrementOpenAIL2CacheStoreSkipReason !== 'function' || !reason) {
+    return
+  }
+
+  await redis.incrementOpenAIL2CacheStoreSkipReason(reason)
 }
 
 /**
@@ -722,7 +732,7 @@ async function createCaptureDecision(context = {}) {
  */
 async function storeResponse(decision, responseContext = {}) {
   if (!decision || decision.kind !== 'miss') {
-    return { stored: false }
+    return { stored: false, reason: 'decision_not_miss' }
   }
 
   if (
@@ -732,11 +742,41 @@ async function storeResponse(decision, responseContext = {}) {
     !responseContext.body ||
     typeof responseContext.body !== 'object'
   ) {
-    return { stored: false }
+    await incrementStoreSkipMetrics('invalid_response_payload')
+    logCacheStoreSkipDetails({
+      layer: 'l2',
+      reason: 'invalid_response_payload',
+      context: {
+        tenantId: decision.tenantId,
+        provider: decision.provider,
+        endpoint: decision.endpoint,
+        resolvedModel: decision.model,
+        requestBody: { model: decision.model }
+      },
+      responseBody: responseContext.body || {}
+    })
+    return { stored: false, reason: 'invalid_response_payload' }
   }
 
   if (decision.requestHasTools && hasResponseToolCalls(responseContext.body)) {
-    return { stored: false }
+    await incrementStoreSkipMetrics('response_has_tool_calls')
+    logCacheStoreSkipDetails({
+      layer: 'l2',
+      reason: 'response_has_tool_calls',
+      context: {
+        tenantId: decision.tenantId,
+        provider: decision.provider,
+        endpoint: decision.endpoint,
+        resolvedModel: decision.model,
+        requestBody: {
+          model: decision.model,
+          tools: decision.toolSignature ? [{ type: 'function', name: 'tool' }] : undefined,
+          parallel_tool_calls: decision.parallelToolCalls
+        }
+      },
+      responseBody: responseContext.body
+    })
+    return { stored: false, reason: 'response_has_tool_calls' }
   }
 
   const entryId = createEntryId()

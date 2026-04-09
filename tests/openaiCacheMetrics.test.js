@@ -47,9 +47,11 @@ describe('redis.getOpenAICacheMetrics', () => {
         cache_miss: '4',
         cache_bypass: '1',
         cache_write: '1',
+        cache_store_skip: '1',
         embedding_hit: '2',
         embedding_miss: '1',
-        'bypass_reason:stream_request': '1'
+        'bypass_reason:stream_request': '1',
+        'store_skip_reason:response_has_tool_calls': '1'
       })
       .mockResolvedValueOnce({
         cache_hit_exact: '1',
@@ -71,10 +73,13 @@ describe('redis.getOpenAICacheMetrics', () => {
         cache_miss: '10',
         cache_bypass: '2',
         cache_write: '5',
+        cache_store_skip: '3',
         embedding_hit: '9',
         embedding_miss: '3',
         'bypass_reason:stream_request': '1',
-        'bypass_reason:structured_output_request': '1'
+        'bypass_reason:structured_output_request': '1',
+        'store_skip_reason:response_has_tool_calls': '2',
+        'store_skip_reason:invalid_response_payload': '1'
       })
       .mockResolvedValueOnce({
         cache_hit_exact: '4',
@@ -138,6 +143,7 @@ describe('redis.getOpenAICacheMetrics', () => {
       cache_miss: 10,
       cache_bypass: 2,
       cache_write: 5,
+      cache_store_skip: 3,
       cache_reject_ranked: 0,
       embedding_hit: 9,
       embedding_miss: 3,
@@ -153,11 +159,16 @@ describe('redis.getOpenAICacheMetrics', () => {
       followUpEnrichmentRate: 0,
       recallShardHitRate: 0
     })
+    expect(metrics.l2.storeSkipReasons).toEqual([
+      { reason: 'response_has_tool_calls', count: 2 },
+      { reason: 'invalid_response_payload', count: 1 }
+    ])
     expect(metrics.l2.sinceProcessStart.counters).toEqual({
       cache_hit_semantic: 6,
       cache_miss: 6,
       cache_bypass: 1,
       cache_write: 4,
+      cache_store_skip: 2,
       cache_reject_ranked: 0,
       embedding_hit: 7,
       embedding_miss: 2,
@@ -174,6 +185,10 @@ describe('redis.getOpenAICacheMetrics', () => {
       topBypassReason: { reason: 'structured_output_request', count: 1 },
       status: 'enabled'
     })
+    expect(metrics.l2.sinceProcessStart.storeSkipReasons).toEqual([
+      { reason: 'invalid_response_payload', count: 1 },
+      { reason: 'response_has_tool_calls', count: 1 }
+    ])
 
     expect(metrics.l3.counters).toEqual({
       cache_hit_exact: 4,

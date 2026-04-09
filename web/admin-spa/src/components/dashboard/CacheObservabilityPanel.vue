@@ -290,6 +290,41 @@
                 <p class="mt-1 text-[11px] text-slate-500">{{ item.detail }}</p>
               </div>
             </div>
+
+            <div
+              v-if="l2StoreSkipReasons.length > 0"
+              class="mt-4 rounded-2xl border border-white/80 bg-white/80 p-4 shadow-sm"
+            >
+              <div class="flex items-start justify-between gap-3">
+                <div>
+                  <p class="text-sm font-semibold text-slate-900">L2 写入跳过热点</p>
+                  <p class="mt-1 text-xs text-slate-500">
+                    这里看 miss 之后为什么没有成功落回语义缓存。
+                  </p>
+                </div>
+                <span class="text-xs font-medium text-slate-500">
+                  总计 {{ formatNumber(l2PrimaryMetrics?.counters?.cache_store_skip) }}
+                </span>
+              </div>
+
+              <div class="mt-3 space-y-2">
+                <div
+                  v-for="item in l2StoreSkipReasons.slice(0, 4)"
+                  :key="item.reason"
+                  class="flex items-center justify-between rounded-2xl bg-slate-50 px-3 py-2"
+                >
+                  <div class="min-w-0">
+                    <p class="truncate text-sm font-medium text-slate-800">
+                      {{ formatCacheBypassReason(item.reason) }}
+                    </p>
+                    <p class="mt-0.5 truncate text-[11px] text-slate-500">{{ item.reason }}</p>
+                  </div>
+                  <span class="ml-3 text-sm font-semibold text-slate-900">
+                    {{ formatNumber(item.count) }}
+                  </span>
+                </div>
+              </div>
+            </div>
           </section>
 
           <section class="rounded-3xl border border-slate-200 bg-slate-50/90 p-5">
@@ -388,6 +423,8 @@ const bypassReasonLabels = {
   dynamic_request: '动态请求参数',
   stream_request: '流式请求',
   structured_output_request: '结构化输出请求',
+  response_has_tool_calls: '响应包含 tool calls，未写入 L2',
+  invalid_response_payload: '响应载荷不完整，无法写入 L2',
   tool_custom: '携带 custom 工具',
   unsupported_input_item: '输入项不支持',
   text_too_long: '文本过长',
@@ -460,6 +497,11 @@ const l2Recommendations = computed(() =>
     ? l2PrimaryMetrics.value.recommendations
     : []
 )
+const l2StoreSkipReasons = computed(() =>
+  Array.isArray(l2PrimaryMetrics.value?.storeSkipReasons)
+    ? l2PrimaryMetrics.value.storeSkipReasons
+    : []
+)
 
 const getLayerHitRate = (key, metrics) =>
   key === 'l2'
@@ -527,15 +569,19 @@ const overview = computed(() => ({
   stage:
     diagnostics.value.primaryIssue === 'threshold'
       ? '召回后筛选'
-      : diagnostics.value.primaryIssue === 'bypass'
-        ? '参与率不足'
-        : '样本预热',
+      : diagnostics.value.primaryIssue === 'store_skip'
+        ? 'miss 后未写回'
+        : diagnostics.value.primaryIssue === 'bypass'
+          ? '参与率不足'
+          : '样本预热',
   focus:
     diagnostics.value.primaryIssue === 'threshold'
       ? '优先放宽接受线'
-      : diagnostics.value.primaryIssue === 'bypass'
-        ? '优先降低 bypass'
-        : `继续积累${primaryLabel.value}样本`,
+      : diagnostics.value.primaryIssue === 'store_skip'
+        ? '优先打通写回链路'
+        : diagnostics.value.primaryIssue === 'bypass'
+          ? '优先降低 bypass'
+          : `继续积累${primaryLabel.value}样本`,
   blocker: primaryBypassReason.value
     ? `${formatCacheBypassReason(primaryBypassReason.value.reason)} · ${formatNumber(primaryBypassReason.value.count)}`
     : '暂无明显阻塞'
@@ -617,6 +663,12 @@ const diagnosticCards = computed(() => [
     value: formatRatioPercent(l2PrimaryMetrics.value?.summary?.bypassRate),
     detail: `bypass ${formatNumber(l2PrimaryMetrics.value?.counters?.cache_bypass)}`,
     className: 'text-rose-600'
+  },
+  {
+    label: '写入跳过率',
+    value: formatRatioPercent(diagnostics.value?.storeSkipRate),
+    detail: `skip ${formatNumber(l2PrimaryMetrics.value?.counters?.cache_store_skip)}`,
+    className: 'text-orange-600'
   }
 ])
 
@@ -778,6 +830,7 @@ function getReadinessLabel(readiness) {
 function getPrimaryIssueLabel(issue) {
   return (
     {
+      store_skip: '写入被跳过',
       threshold: '阈值偏严',
       recall: '召回不足',
       bypass: '参与率不足',
