@@ -1,5 +1,5 @@
 <template>
-  <div class="card mt-6 p-4 sm:p-6">
+  <div :class="containerClass">
     <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
       <div>
         <h4 class="text-base font-semibold text-gray-900 dark:text-gray-100 sm:text-lg">
@@ -137,11 +137,18 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 
 import { useDashboardStore } from '@/stores/dashboard'
 import { formatNumber } from '@/utils/tools'
+
+const props = defineProps({
+  embedded: {
+    type: Boolean,
+    default: false
+  }
+})
 
 const dashboardStore = useDashboardStore()
 const {
@@ -161,6 +168,7 @@ const {
 } = dashboardStore
 
 const entriesRefreshing = ref(false)
+const containerClass = computed(() => (props.embedded ? 'pt-4' : 'card mt-6 p-4 sm:p-6'))
 
 const handleRefreshEntries = async () => {
   if (entriesRefreshing.value) {

@@ -131,7 +131,7 @@ describe('prompt-cache token cache provider', () => {
     )
   })
 
-  it('uses the last user prompt as the prompt-cache key input', () => {
+  it('bypasses stateful multi-turn responses conversations', () => {
     const firstEvaluation = evaluateTokenCacheRequest({
       endpointPath: '/v1/responses',
       requestBody: {
@@ -156,33 +156,31 @@ describe('prompt-cache token cache provider', () => {
       }
     })
 
-    const secondEvaluation = evaluateTokenCacheRequest({
+    expect(firstEvaluation).toEqual(
+      expect.objectContaining({
+        eligible: false,
+        reason: 'stateful_conversation'
+      })
+    )
+  })
+
+  it('bypasses responses requests when relay context carries a session header', () => {
+    const evaluation = evaluateTokenCacheRequest({
       endpointPath: '/v1/responses',
+      headerSessionId: 'codex-session-1',
       requestBody: {
         model: 'gpt-5',
-        input: [
-          {
-            type: 'message',
-            role: 'user',
-            content: [{ type: 'input_text', text: 'Draft an outline' }]
-          },
-          {
-            type: 'message',
-            role: 'assistant',
-            content: [{ type: 'output_text', text: 'What audience is this for?' }]
-          },
-          {
-            type: 'message',
-            role: 'user',
-            content: [{ type: 'input_text', text: 'Make it concise' }]
-          }
-        ]
+        input: 'Explain quantum physics',
+        stream: false
       }
     })
 
-    expect(firstEvaluation.promptText).toBe('Make it concise')
-    expect(secondEvaluation.promptText).toBe('Make it concise')
-    expect(firstEvaluation.exactKeyInput).toBe(secondEvaluation.exactKeyInput)
+    expect(evaluation).toEqual(
+      expect.objectContaining({
+        eligible: false,
+        reason: 'stateful_conversation'
+      })
+    )
   })
 
   it('keeps tool requests eligible but exact-only', () => {
@@ -432,23 +430,7 @@ describe('prompt-cache token cache provider', () => {
       endpointPath: '/v1/responses',
       requestBody: {
         model: 'gpt-5',
-        input: [
-          {
-            type: 'message',
-            role: 'user',
-            content: [{ type: 'input_text', text: 'Explain quantum physics' }]
-          },
-          {
-            type: 'message',
-            role: 'assistant',
-            content: [{ type: 'output_text', text: 'What depth do you want?' }]
-          },
-          {
-            type: 'message',
-            role: 'user',
-            content: [{ type: 'input_text', text: 'How does quantum physics work?' }]
-          }
-        ],
+        input: 'How does quantum physics work?',
         stream: false
       }
     }

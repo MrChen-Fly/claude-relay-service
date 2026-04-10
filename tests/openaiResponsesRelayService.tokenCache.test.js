@@ -52,7 +52,9 @@ describe('openaiResponsesRelayService token cache hooks', () => {
   it('builds a stable token cache context from prompt_cache_key', () => {
     const context = buildTokenCacheRequestContext({
       req: {
-        headers: {},
+        headers: {
+          session_id: 'session-header-1'
+        },
         body: {
           model: 'gpt-5.3-codex',
           prompt_cache_key: 'relay-cache-key',
@@ -79,7 +81,8 @@ describe('openaiResponsesRelayService token cache hooks', () => {
         endpointPath: '/responses',
         requestedModel: 'gpt-5.3-codex',
         promptCacheKey: 'relay-cache-key',
-        sessionKey: 'conv-1',
+        headerSessionId: 'session-header-1',
+        sessionKey: 'session-header-1',
         conversationId: 'conv-1',
         isStream: false
       })
@@ -259,12 +262,17 @@ describe('openaiResponsesRelayService token cache hooks', () => {
     expect(writtenChunks).toEqual(
       expect.arrayContaining([
         expect.stringContaining('"type":"response.created"'),
+        expect.stringContaining('"type":"response.in_progress"'),
+        expect.stringContaining('"type":"response.output_item.added"'),
+        expect.stringContaining('"type":"response.content_part.added"'),
+        expect.stringContaining('"type":"response.output_text.delta"'),
+        expect.stringContaining('"type":"response.output_text.done"'),
+        expect.stringContaining('"type":"response.content_part.done"'),
         expect.stringContaining('"type":"response.output_item.done"'),
         expect.stringContaining('A cached streamed answer'),
         expect.stringContaining('"type":"response.completed"')
       ])
     )
-    expect(writtenChunks.join('\n')).not.toContain('"type":"response.output_text.delta"')
     expect(res.end).toHaveBeenCalled()
   })
 

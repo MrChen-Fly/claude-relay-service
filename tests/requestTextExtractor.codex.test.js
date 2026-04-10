@@ -55,7 +55,7 @@ describe('requestTextExtractor codex request shapes', () => {
     expect(evaluation.exactKeyInput).toContain('mcp__workspace__search_files')
   })
 
-  it('keeps codex requests with tool call history exact-cacheable', () => {
+  it('bypasses codex responses requests with tool call history', () => {
     const evaluation = evaluateTokenCacheRequest({
       endpointPath: '/v1/responses',
       requestBody: buildCodexResponsesBody({
@@ -89,12 +89,10 @@ describe('requestTextExtractor codex request shapes', () => {
 
     expect(evaluation).toEqual(
       expect.objectContaining({
-        eligible: true,
-        semanticEligible: false,
-        cacheStrategy: 'exact_only'
+        eligible: false,
+        reason: 'stateful_conversation'
       })
     )
-    expect(evaluation.exactKeyInput).toContain('mcp__workspace__search_files')
   })
 
   it('normalizes chat tool call ids out of the exact cache fingerprint', () => {
@@ -149,7 +147,7 @@ describe('requestTextExtractor codex request shapes', () => {
     expect(firstEvaluation.exactKeyInput).not.toBe(thirdEvaluation.exactKeyInput)
   })
 
-  it('keeps ultra-long deterministic codex requests eligible and keyed by the last user turn', () => {
+  it('bypasses ultra-long deterministic codex requests once they carry conversation history', () => {
     const ultraLongPrompt = Array.from(
       { length: 4096 },
       (_, index) => `Segment ${index} traces the token cache boundary carefully.`
@@ -181,12 +179,15 @@ describe('requestTextExtractor codex request shapes', () => {
 
     expect(firstEvaluation).toEqual(
       expect.objectContaining({
-        eligible: true,
-        promptText: ultraLongPrompt
+        eligible: false,
+        reason: 'stateful_conversation'
       })
     )
-    expect(firstEvaluation.promptText.length).toBeGreaterThan(200000)
-    expect(firstEvaluation.exactKeyInput).toBe(secondEvaluation.exactKeyInput)
-    expect(firstEvaluation.scopeKey).toMatch(/^[a-f0-9]{64}$/)
+    expect(secondEvaluation).toEqual(
+      expect.objectContaining({
+        eligible: false,
+        reason: 'stateful_conversation'
+      })
+    )
   })
 })

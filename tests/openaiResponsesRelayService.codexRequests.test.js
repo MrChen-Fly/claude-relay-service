@@ -84,10 +84,11 @@ function buildSearchTool(name = 'mcp__workspace__search_files') {
   }
 }
 
-function buildReq(body) {
+function buildReq(body, headers = {}) {
   return {
     headers: {
-      'user-agent': 'codex_cli_rs/0.43.0 (Windows 10.0.26100; x86_64) WindowsTerminal'
+      'user-agent': 'codex_cli_rs/0.43.0 (Windows 10.0.26100; x86_64) WindowsTerminal',
+      ...headers
     },
     body,
     path: '/v1/responses',
@@ -229,7 +230,7 @@ describe('openaiResponsesRelayService codex request simulation', () => {
     )
   })
 
-  it('exact-caches codex tool requests without semantic reuse', async () => {
+  it('bypasses token cache for stateful codex tool conversations', async () => {
     const storage = new MemoryTokenCacheStorage()
     const metrics = {
       recordAsync: jest.fn()
@@ -294,7 +295,7 @@ describe('openaiResponsesRelayService codex request simulation', () => {
       { id: 'key-1' }
     )
 
-    expect(storage.data.size).toBeGreaterThan(0)
+    expect(storage.data.size).toBe(0)
 
     const secondRes = buildRes()
     await openaiResponsesRelayService.handleRequest(
@@ -304,12 +305,85 @@ describe('openaiResponsesRelayService codex request simulation', () => {
       { id: 'key-1' }
     )
 
-    expect(axios).toHaveBeenCalledTimes(1)
-    expect(secondRes.setHeader).toHaveBeenCalledWith('x-token-cache', 'HIT')
-    expect(secondRes.setHeader).toHaveBeenCalledWith('x-token-cache-layer', 'exact')
-    expect(metrics.recordAsync).not.toHaveBeenCalledWith(
+    expect(axios).toHaveBeenCalledTimes(2)
+    expect(secondRes.setHeader).not.toHaveBeenCalledWith('x-token-cache', 'HIT')
+    expect(metrics.recordAsync).toHaveBeenCalledWith(
       expect.objectContaining({
-        'bypassReason:dynamic_tools': 1
+        requests: 1,
+        bypasses: 1,
+        'bypassReason:stateful_conversation': 1
+      })
+    )
+  })
+
+  it('bypasses token cache for codex responses traffic keyed by session headers', async () => {
+    const storage = new MemoryTokenCacheStorage()
+    const metrics = {
+      recordAsync: jest.fn()
+    }
+    const provider = new PromptCacheTokenCacheProvider({
+      storage,
+      metrics,
+      config: {
+        ttlSeconds: 3600,
+        maxEntries: 100
+      }
+    })
+    openaiResponsesRelayService.setTokenCacheProvider(provider)
+
+    const requestBody = buildCodexResponsesBody({
+      messages: [{ role: 'user', content: 'Reply with SESSION_HEADER_SAFE.' }],
+      prompt_cache_key: 'codex-session-request'
+    })
+    const requestHeaders = {
+      session_id: 'codex-session-header-1'
+    }
+
+    axios
+      .mockResolvedValueOnce(
+        buildSuccessResponse({
+          id: 'resp_session_1',
+          outputText: 'SESSION_HEADER_SAFE',
+          usage: {
+            input_tokens: 64,
+            output_tokens: 4,
+            total_tokens: 68
+          }
+        })
+      )
+      .mockResolvedValueOnce(
+        buildSuccessResponse({
+          id: 'resp_session_2',
+          outputText: 'SESSION_HEADER_SAFE',
+          usage: {
+            input_tokens: 64,
+            output_tokens: 4,
+            total_tokens: 68
+          }
+        })
+      )
+
+    await openaiResponsesRelayService.handleRequest(
+      buildReq(requestBody, requestHeaders),
+      buildRes(),
+      { id: 'responses-1', name: 'Responses Primary' },
+      { id: 'key-1' }
+    )
+
+    await openaiResponsesRelayService.handleRequest(
+      buildReq(requestBody, requestHeaders),
+      buildRes(),
+      { id: 'responses-1', name: 'Responses Primary' },
+      { id: 'key-1' }
+    )
+
+    expect(storage.data.size).toBe(0)
+    expect(axios).toHaveBeenCalledTimes(2)
+    expect(metrics.recordAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requests: 1,
+        bypasses: 1,
+        'bypassReason:stateful_conversation': 1
       })
     )
   })

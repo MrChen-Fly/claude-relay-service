@@ -63,6 +63,25 @@ function extractStableTokenCacheSessionKey(req = null, ...payloads) {
   return firstNonEmptyString([...headerCandidates, ...sessionCandidates, ...promptCacheCandidates])
 }
 
+function extractHeaderSessionId(req = null) {
+  return firstNonEmptyString([req?.headers?.session_id, req?.headers?.['x-session-id']])
+}
+
+function extractBodySessionId(...payloads) {
+  for (const payload of payloads) {
+    if (!payload || typeof payload !== 'object') {
+      continue
+    }
+
+    const sessionId = firstNonEmptyString([payload.session_id, payload.sessionId])
+    if (sessionId) {
+      return sessionId
+    }
+  }
+
+  return ''
+}
+
 function extractConversationId(...payloads) {
   for (const payload of payloads) {
     if (!payload || typeof payload !== 'object') {
@@ -95,6 +114,8 @@ function buildTokenCacheRequestContext({
   const requestBody = originalRequestBody || upstreamRequestBody
 
   const promptCacheKey = extractPromptCacheKey(requestBody, req?.body)
+  const headerSessionId = extractHeaderSessionId(req)
+  const bodySessionId = extractBodySessionId(requestBody, req?.body)
   const sessionKey = extractStableTokenCacheSessionKey(req, requestBody, req?.body)
   const conversationId = extractConversationId(requestBody, req?.body)
   const sessionHash = sessionKey
@@ -109,6 +130,8 @@ function buildTokenCacheRequestContext({
     endpointPath: attempt?.path || req?.path || req?.originalUrl || '',
     requestedModel: requestedModel || attempt?.requestedModel || requestBody?.model || null,
     promptCacheKey,
+    headerSessionId,
+    bodySessionId,
     sessionKey,
     sessionHash,
     conversationId,
@@ -149,6 +172,8 @@ module.exports = {
   TokenCacheProvider,
   NoopTokenCacheProvider,
   buildTokenCacheRequestContext,
+  extractHeaderSessionId,
+  extractBodySessionId,
   extractPromptCacheKey,
   extractStableTokenCacheSessionKey
 }

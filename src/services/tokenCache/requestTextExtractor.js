@@ -251,6 +251,63 @@ function extractSystemText(messages = []) {
     .join('\n')
 }
 
+function isResponsesRequest(body = {}, endpointPath = '') {
+  const normalizedPath = String(endpointPath || '').toLowerCase()
+  return (
+    normalizedPath.includes('/responses') ||
+    body.input !== undefined ||
+    body.instructions !== undefined
+  )
+}
+
+function hasExplicitConversationState(body = {}, context = {}) {
+  const candidates = [
+    context.headerSessionId,
+    context.bodySessionId,
+    context.conversationId,
+    body.session_id,
+    body.sessionId,
+    body.conversation_id,
+    body.conversationId,
+    body.previous_response_id,
+    body.previousResponseId
+  ]
+
+  return candidates.some((value) => {
+    if (typeof value === 'string') {
+      return value.trim().length > 0
+    }
+
+    return value !== undefined && value !== null && value !== false
+  })
+}
+
+function hasStatefulResponsesConversation(body = {}, messages = [], context = {}) {
+  if (hasExplicitConversationState(body, context)) {
+    return true
+  }
+
+  let userTurnCount = 0
+  for (const message of messages) {
+    if (!message || message.role === 'system') {
+      continue
+    }
+
+    if (message.role === 'assistant' || message.role === 'tool') {
+      return true
+    }
+
+    if (message.role === 'user' && message.content) {
+      userTurnCount += 1
+      if (userTurnCount > 1) {
+        return true
+      }
+    }
+  }
+
+  return false
+}
+
 function hasStructuredOutput(body = {}) {
   const responseFormatType = body.response_format?.type
   const textFormatType = body.text?.format?.type
@@ -309,10 +366,15 @@ function evaluateTokenCacheRequest(context = {}) {
   const requestBody =
     context.requestBody && typeof context.requestBody === 'object' ? context.requestBody : {}
   const messages = extractMessages(requestBody, context.endpointPath)
+  const responsesRequest = isResponsesRequest(requestBody, context.endpointPath)
   const promptText = extractLatestUserPrompt(messages)
   const messageText = buildTranscript(messages)
   const systemText = extractSystemText(messages)
   const hasTooling = hasDynamicTooling(requestBody, messages)
+
+  if (responsesRequest && hasStatefulResponsesConversation(requestBody, messages, context)) {
+    return { eligible: false, reason: 'stateful_conversation' }
+  }
 
   if (hasStructuredOutput(requestBody)) {
     return { eligible: false, reason: 'structured_output' }

@@ -13,6 +13,7 @@ const upstreamErrorHelper = require('../../utils/upstreamErrorHelper')
 const { IncrementalSSEParser } = require('../../utils/sseParser')
 const ChatToResponsesConverter = require('../openaiProtocol/chatToResponsesConverter')
 const CodexToOpenAIConverter = require('../codexToOpenAI')
+const { buildCachedResponsesStreamEvents } = require('./openaiResponsesCachedStreamEvents')
 const redis = require('../../models/redis')
 const {
   normalizeTargetPath,
@@ -1361,52 +1362,7 @@ class OpenAIResponsesRelayService {
   }
 
   _buildCachedResponsesStreamEvents(responseBody = {}) {
-    const responseId = responseBody.id || `resp_${Date.now()}`
-    const createdAt =
-      typeof responseBody.created_at === 'string'
-        ? responseBody.created_at
-        : new Date(
-            typeof responseBody.created === 'number' ? responseBody.created * 1000 : Date.now()
-          ).toISOString()
-    const model = responseBody.model || 'unknown'
-    const outputItems = Array.isArray(responseBody.output) ? responseBody.output : []
-    const events = [
-      toSSE({
-        type: 'response.created',
-        response: {
-          id: responseId,
-          object: 'response',
-          created_at: createdAt,
-          status: 'in_progress',
-          model,
-          output: []
-        }
-      })
-    ]
-
-    outputItems.forEach((item, outputIndex) => {
-      if (!item || typeof item !== 'object') {
-        return
-      }
-      // Replay cached responses using complete output items instead of synthetic deltas.
-      // This stays closer to the passthrough upstream SSE shape that Codex clients already handle.
-      events.push(
-        toSSE({
-          type: 'response.output_item.done',
-          output_index: outputIndex,
-          item
-        })
-      )
-    })
-
-    events.push(
-      toSSE({
-        type: 'response.completed',
-        response: responseBody
-      })
-    )
-
-    return events
+    return buildCachedResponsesStreamEvents(responseBody)
   }
 
   _buildCachedChatCompletionStreamEvents(responseBody = {}) {
