@@ -283,7 +283,7 @@ class OpenAISemanticProvider {
             {
               role: 'system',
               content:
-                'You are a semantic judge. Determine whether two prompts have the same intent and expected answer. Reply only YES or NO.'
+                'You are a semantic judge. Determine whether two prompt payloads have the same intent and expected answer. The payloads may be full prompts or condensed long-prompt summaries with excerpts and structured tokens. If there is any meaningful difference in identifiers, file paths, versions, counts, or requested output facts, reply only NO. Reply only YES or NO.'
             },
             {
               role: 'user',

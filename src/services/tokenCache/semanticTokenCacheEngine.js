@@ -1,5 +1,11 @@
 const logger = require('../../utils/logger')
 const EmbeddingAnnIndex = require('./embeddingAnnIndex')
+const {
+  DEFAULT_LONG_PROMPT_THRESHOLD_CHARS,
+  buildSemanticVerificationText,
+  isLongVerificationText,
+  normalizeVerificationText
+} = require('./semanticVerificationText')
 const { cosineSimilarity } = require('./vector')
 
 function normalizeThresholds(options = {}) {
@@ -29,6 +35,8 @@ class SemanticTokenCacheEngine {
     this.lowThreshold = thresholds.lowThreshold
     this.enableGrayZoneVerifier = options.enableGrayZoneVerifier !== false
     this.useANNIndex = options.useANNIndex !== false
+    this.longPromptThresholdChars =
+      Number.parseInt(options.longPromptThresholdChars, 10) || DEFAULT_LONG_PROMPT_THRESHOLD_CHARS
     this.indexes = new Map()
     this.indexWarmupPromise = this._warmIndexes()
   }
@@ -144,6 +152,44 @@ class SemanticTokenCacheEngine {
     }
   }
 
+  _isLongPromptVerificationRequired(promptText, originalPrompt) {
+    return (
+      isLongVerificationText(promptText, this.longPromptThresholdChars) ||
+      isLongVerificationText(originalPrompt, this.longPromptThresholdChars)
+    )
+  }
+
+  _isEquivalentPromptText(promptText, originalPrompt) {
+    return normalizeVerificationText(promptText) === normalizeVerificationText(originalPrompt)
+  }
+
+  async _verifyPromptSimilarity(promptText, originalPrompt) {
+    if (!promptText || !originalPrompt || typeof this.provider?.checkSimilarity !== 'function') {
+      return false
+    }
+
+    if (this._isEquivalentPromptText(promptText, originalPrompt)) {
+      return true
+    }
+
+    const requiresLongVerification = this._isLongPromptVerificationRequired(
+      promptText,
+      originalPrompt
+    )
+    const verificationPromptText = requiresLongVerification
+      ? buildSemanticVerificationText(promptText, {
+          longPromptThresholdChars: this.longPromptThresholdChars
+        })
+      : promptText
+    const verificationOriginalPrompt = requiresLongVerification
+      ? buildSemanticVerificationText(originalPrompt, {
+          longPromptThresholdChars: this.longPromptThresholdChars
+        })
+      : originalPrompt
+
+    return this.provider.checkSimilarity(verificationPromptText, verificationOriginalPrompt)
+  }
+
   async findSimilar({ scopeKey, promptText }) {
     if (!this.isEnabled() || !scopeKey || !promptText) {
       return null
@@ -165,7 +211,39 @@ class SemanticTokenCacheEngine {
       return null
     }
 
+    const originalPrompt =
+      bestSimilarity >= this.highThreshold ||
+      (bestSimilarity >= this.lowThreshold && this.enableGrayZoneVerifier)
+        ? await this.storage.getPrompt(cacheKey)
+        : ''
+
     if (bestSimilarity >= this.highThreshold) {
+      if (!originalPrompt) {
+        return isLongVerificationText(promptText, this.longPromptThresholdChars)
+          ? null
+          : {
+              cacheKey,
+              score: bestSimilarity,
+              layer: 'semantic'
+            }
+      }
+
+      if (
+        this._isLongPromptVerificationRequired(promptText, originalPrompt) &&
+        !this._isEquivalentPromptText(promptText, originalPrompt)
+      ) {
+        const verified = await this._verifyPromptSimilarity(promptText, originalPrompt)
+        if (!verified) {
+          return null
+        }
+
+        return {
+          cacheKey,
+          score: bestSimilarity,
+          layer: 'semantic_verified'
+        }
+      }
+
       return {
         cacheKey,
         score: bestSimilarity,
@@ -185,12 +263,11 @@ class SemanticTokenCacheEngine {
       return null
     }
 
-    const originalPrompt = await this.storage.getPrompt(cacheKey)
     if (!originalPrompt) {
       return null
     }
 
-    const verified = await this.provider.checkSimilarity(promptText, originalPrompt)
+    const verified = await this._verifyPromptSimilarity(promptText, originalPrompt)
     if (!verified) {
       return null
     }

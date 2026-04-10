@@ -85,4 +85,79 @@ describe('semanticTokenCacheEngine', () => {
     expect(storage.getAllEmbeddingEntries).toHaveBeenCalled()
     expect(storage.getAllEmbeddings).not.toHaveBeenCalled()
   })
+
+  it('verifies high-threshold long-prompt matches before returning a semantic hit', async () => {
+    const longPromptA = Array.from(
+      { length: 900 },
+      (_, index) => `Segment ${index} repeats semantic-long-a for verification.`
+    ).join(' ')
+    const longPromptB = Array.from(
+      { length: 900 },
+      (_, index) => `Segment ${index} repeats semantic-long-b for verification.`
+    ).join(' ')
+    const storage = {
+      getAllEmbeddings: jest.fn(async () => new Map([['embedding:scope:key-1', [1, 0]]])),
+      getPrompt: jest.fn(async () => longPromptB)
+    }
+    const provider = {
+      isEnabled: jest.fn(() => true),
+      embed: jest.fn(async () => [1, 0]),
+      checkSimilarity: jest.fn(async () => true)
+    }
+    const engine = new SemanticTokenCacheEngine(storage, provider, {
+      useANNIndex: false,
+      highThreshold: 0.7,
+      lowThreshold: 0.3
+    })
+
+    await expect(
+      engine.findSimilar({
+        scopeKey: 'scope',
+        promptText: longPromptA
+      })
+    ).resolves.toEqual({
+      cacheKey: 'key-1',
+      score: 1,
+      layer: 'semantic_verified'
+    })
+
+    expect(provider.checkSimilarity).toHaveBeenCalledWith(
+      expect.stringContaining('[LONG PROMPT SUMMARY]'),
+      expect.stringContaining('[LONG PROMPT SUMMARY]')
+    )
+  })
+
+  it('rejects high-threshold long-prompt matches when verification fails', async () => {
+    const longPromptA = Array.from(
+      { length: 900 },
+      (_, index) => `Segment ${index} repeats semantic-run-a for rejection.`
+    ).join(' ')
+    const longPromptB = Array.from(
+      { length: 900 },
+      (_, index) => `Segment ${index} repeats semantic-run-b for rejection.`
+    ).join(' ')
+    const storage = {
+      getAllEmbeddings: jest.fn(async () => new Map([['embedding:scope:key-1', [1, 0]]])),
+      getPrompt: jest.fn(async () => longPromptB)
+    }
+    const provider = {
+      isEnabled: jest.fn(() => true),
+      embed: jest.fn(async () => [1, 0]),
+      checkSimilarity: jest.fn(async () => false)
+    }
+    const engine = new SemanticTokenCacheEngine(storage, provider, {
+      useANNIndex: false,
+      highThreshold: 0.7,
+      lowThreshold: 0.3
+    })
+
+    await expect(
+      engine.findSimilar({
+        scopeKey: 'scope',
+        promptText: longPromptA
+      })
+    ).resolves.toBeNull()
+
+    expect(provider.checkSimilarity).toHaveBeenCalledTimes(1)
+  })
 })

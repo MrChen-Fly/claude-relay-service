@@ -424,6 +424,66 @@ describe('prompt-cache token cache provider', () => {
     )
   })
 
+  it('surfaces verified semantic hits for long prompts as semantic_verified', async () => {
+    const storage = new MemoryTokenCacheStorage()
+    const metrics = {
+      recordAsync: jest.fn()
+    }
+    const semanticEngine = {
+      isEnabled: jest.fn(() => true),
+      findSimilar: jest.fn(async () => ({
+        cacheKey: 'semantic-verified-key',
+        score: 0.95,
+        layer: 'semantic_verified'
+      })),
+      store: jest.fn()
+    }
+    const provider = new PromptCacheTokenCacheProvider({
+      storage,
+      semanticEngine,
+      metrics,
+      config: {
+        ttlSeconds: 3600,
+        maxEntries: 100
+      }
+    })
+    const longPrompt = Array.from(
+      { length: 900 },
+      (_, index) => `Segment ${index} validates long semantic verification reuse.`
+    ).join(' ')
+
+    await provider.exactCache.set('semantic-verified-key', {
+      statusCode: 200,
+      body: { id: 'resp_semantic_verified', output_text: 'A verified semantic answer' }
+    })
+
+    const lookupResult = await provider.lookup({
+      endpointPath: '/v1/responses',
+      requestBody: {
+        model: 'gpt-5',
+        input: longPrompt,
+        stream: false
+      }
+    })
+
+    expect(lookupResult).toEqual(
+      expect.objectContaining({
+        hit: true,
+        body: { id: 'resp_semantic_verified', output_text: 'A verified semantic answer' },
+        headers: expect.objectContaining({
+          'x-token-cache-layer': 'semantic_verified'
+        })
+      })
+    )
+    expect(metrics.recordAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        hits: 1,
+        semanticHits: 1,
+        semanticVerifiedHits: 1
+      })
+    )
+  })
+
   it('keeps the exact response stored when semantic artifacts fail to persist', async () => {
     const storage = new MemoryTokenCacheStorage()
     const semanticEngine = {
