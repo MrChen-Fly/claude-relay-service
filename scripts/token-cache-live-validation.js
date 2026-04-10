@@ -6,8 +6,10 @@ const axios = require('axios')
 const CodexToOpenAIConverter = require('../src/services/codexToOpenAI')
 
 const BASE_URL = process.env.TOKEN_CACHE_LIVE_BASE_URL || 'http://127.0.0.1:8150'
+const RESPONSES_PATH = process.env.TOKEN_CACHE_LIVE_PATH || '/openai/responses'
 const MODEL = process.env.TOKEN_CACHE_LIVE_MODEL || 'gpt-5'
 const CODEx_USER_AGENT = 'codex_cli_rs/0.43.0 (Windows 10.0.26100; x86_64) WindowsTerminal'
+const PROVIDED_API_KEY = String(process.env.TOKEN_CACHE_LIVE_API_KEY || '').trim()
 const WATCH_FIELDS = [
   'requests',
   'eligibleRequests',
@@ -39,6 +41,15 @@ function normalizeBoolean(value) {
 function normalizeCount(value) {
   const parsed = Number.parseInt(value, 10)
   return Number.isFinite(parsed) ? parsed : 0
+}
+
+function normalizeResponsesPath(value) {
+  const normalized = String(value || '').trim()
+  if (!normalized) {
+    return '/openai/responses'
+  }
+
+  return normalized.startsWith('/') ? normalized : `/${normalized}`
 }
 
 function arrayToCountMap(items = []) {
@@ -291,7 +302,7 @@ async function deleteApiKey(adminToken, keyId) {
 async function callResponses(apiKey, body) {
   const response = await axios({
     method: 'post',
-    url: `${BASE_URL}/openai/v1/responses`,
+    url: `${BASE_URL}${normalizeResponsesPath(RESPONSES_PATH)}`,
     timeout: 600000,
     data: body,
     responseType: 'text',
@@ -306,7 +317,7 @@ async function callResponses(apiKey, body) {
 
   if (response.status < 200 || response.status >= 300) {
     const error = new Error(
-      `Request failed: POST ${BASE_URL}/openai/v1/responses -> ${response.status}`
+      `Request failed: POST ${BASE_URL}${normalizeResponsesPath(RESPONSES_PATH)} -> ${response.status}`
     )
     error.status = response.status
     error.responseBody = response.data
@@ -379,6 +390,8 @@ async function main() {
   const runId = `live-${Date.now()}`
   let adminToken = ''
   let createdApiKey = null
+  let runtimeApiKey = PROVIDED_API_KEY
+  const apiKeySource = PROVIDED_API_KEY ? 'provided' : 'temporary_admin_key'
 
   try {
     adminToken = await login()
@@ -398,9 +411,12 @@ async function main() {
       throw new Error('no usable openai-responses account found')
     }
 
-    createdApiKey = await createApiKey(adminToken, account.id, runId)
-    if (!createdApiKey?.id || !createdApiKey?.apiKey) {
-      throw new Error('admin api-key creation did not return a usable key')
+    if (!runtimeApiKey) {
+      createdApiKey = await createApiKey(adminToken, account.id, runId)
+      if (!createdApiKey?.id || !createdApiKey?.apiKey) {
+        throw new Error('admin api-key creation did not return a usable key')
+      }
+      runtimeApiKey = createdApiKey.apiKey
     }
 
     const exactToolBody = buildExactToolRequest(runId)
@@ -410,23 +426,23 @@ async function main() {
     const observations = []
     observations.push({
       label: 'tool_exact_first',
-      ...(await callResponses(createdApiKey.apiKey, exactToolBody))
+      ...(await callResponses(runtimeApiKey, exactToolBody))
     })
     observations.push({
       label: 'tool_exact_second',
-      ...(await callResponses(createdApiKey.apiKey, exactToolBody))
+      ...(await callResponses(runtimeApiKey, exactToolBody))
     })
     observations.push({
       label: 'tool_result_first',
-      ...(await callResponses(createdApiKey.apiKey, toolResultBody))
+      ...(await callResponses(runtimeApiKey, toolResultBody))
     })
     observations.push({
       label: 'tool_result_second',
-      ...(await callResponses(createdApiKey.apiKey, toolResultBody))
+      ...(await callResponses(runtimeApiKey, toolResultBody))
     })
     observations.push({
       label: 'long_plain_text',
-      ...(await callResponses(createdApiKey.apiKey, longPlainTextBody))
+      ...(await callResponses(runtimeApiKey, longPlainTextBody))
     })
 
     const afterStats = await getTokenCacheStats(adminToken)
@@ -438,6 +454,7 @@ async function main() {
 
     const summary = {
       baseUrl: BASE_URL,
+      requestPath: normalizeResponsesPath(RESPONSES_PATH),
       model: MODEL,
       runId,
       account: {
@@ -446,8 +463,9 @@ async function main() {
         providerEndpoint: account.providerEndpoint || ''
       },
       apiKey: {
-        id: createdApiKey.id,
-        masked: maskSecret(createdApiKey.apiKey)
+        id: createdApiKey?.id || '',
+        masked: maskSecret(runtimeApiKey),
+        source: apiKeySource
       },
       runtimeConfig: {
         enabled: normalizeBoolean(afterStats.metrics?.config?.enabled),
