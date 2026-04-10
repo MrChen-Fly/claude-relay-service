@@ -255,9 +255,16 @@ describe('openaiResponsesRelayService token cache hooks', () => {
     expect(res.setHeader).toHaveBeenCalledWith('Content-Type', 'text/event-stream')
     expect(res.setHeader).toHaveBeenCalledWith('x-token-cache', 'HIT')
     expect(res.status).toHaveBeenCalledWith(200)
-    expect(res.write).toHaveBeenCalledWith(expect.stringContaining('"type":"response.created"'))
-    expect(res.write).toHaveBeenCalledWith(expect.stringContaining('A cached streamed answer'))
-    expect(res.write).toHaveBeenCalledWith(expect.stringContaining('"type":"response.completed"'))
+    const writtenChunks = res.write.mock.calls.map(([chunk]) => String(chunk))
+    expect(writtenChunks).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('"type":"response.created"'),
+        expect.stringContaining('"type":"response.output_item.done"'),
+        expect.stringContaining('A cached streamed answer'),
+        expect.stringContaining('"type":"response.completed"')
+      ])
+    )
+    expect(writtenChunks.join('\n')).not.toContain('"type":"response.output_text.delta"')
     expect(res.end).toHaveBeenCalled()
   })
 
@@ -332,9 +339,11 @@ describe('openaiResponsesRelayService token cache hooks', () => {
       'responses-1',
       'openai-responses',
       null,
-      {
-        promptCacheKey: 'relay-cache-key'
-      }
+      expect.objectContaining({
+        promptCacheKey: 'relay-cache-key',
+        stream: false,
+        statusCode: 200
+      })
     )
     expect(provider.store).toHaveBeenCalledWith(
       tokenCacheContext,

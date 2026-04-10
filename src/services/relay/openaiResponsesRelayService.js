@@ -1388,99 +1388,15 @@ class OpenAIResponsesRelayService {
       if (!item || typeof item !== 'object') {
         return
       }
-
-      if (item.type === 'reasoning') {
-        const summaries = Array.isArray(item.summary) ? item.summary : []
-        for (const summary of summaries) {
-          if (summary?.type === 'summary_text' && summary.text) {
-            events.push(
-              toSSE({
-                type: 'response.reasoning_summary_text.delta',
-                delta: summary.text
-              })
-            )
-          }
-        }
-        return
-      }
-
-      if (item.type === 'message') {
-        const contents = Array.isArray(item.content) ? item.content : []
-        contents.forEach((contentItem, contentIndex) => {
-          if (contentItem?.type === 'output_text' && contentItem.text) {
-            events.push(
-              toSSE({
-                type: 'response.output_text.delta',
-                content_index: contentIndex,
-                item_id: item.id,
-                output_index: outputIndex,
-                delta: contentItem.text
-              })
-            )
-
-            events.push(
-              toSSE({
-                type: 'response.output_text.done',
-                content_index: contentIndex,
-                item_id: item.id,
-                output_index: outputIndex,
-                text: contentItem.text,
-                logprobs: contentItem.logprobs || []
-              })
-            )
-          }
+      // Replay cached responses using complete output items instead of synthetic deltas.
+      // This stays closer to the passthrough upstream SSE shape that Codex clients already handle.
+      events.push(
+        toSSE({
+          type: 'response.output_item.done',
+          output_index: outputIndex,
+          item
         })
-
-        events.push(
-          toSSE({
-            type: 'response.output_item.done',
-            output_index: outputIndex,
-            item
-          })
-        )
-        return
-      }
-
-      if (item.type === 'function_call') {
-        events.push(
-          toSSE({
-            type: 'response.output_item.added',
-            output_index: outputIndex,
-            item: {
-              type: 'function_call',
-              id: item.id,
-              call_id: item.call_id,
-              name: item.name,
-              arguments: ''
-            }
-          })
-        )
-
-        if (item.arguments) {
-          events.push(
-            toSSE({
-              type: 'response.function_call_arguments.delta',
-              item_id: item.id,
-              output_index: outputIndex,
-              delta: item.arguments
-            })
-          )
-        }
-
-        events.push(
-          toSSE({
-            type: 'response.output_item.done',
-            output_index: outputIndex,
-            item: {
-              type: 'function_call',
-              id: item.id,
-              call_id: item.call_id,
-              name: item.name,
-              arguments: item.arguments || '{}'
-            }
-          })
-        )
-      }
+      )
     })
 
     events.push(

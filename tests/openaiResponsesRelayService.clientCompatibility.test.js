@@ -138,7 +138,13 @@ describe('openaiResponsesRelayService standard responses client compatibility', 
       'gpt-5.4',
       'responses-compat-1',
       'openai-responses',
-      null
+      null,
+      expect.objectContaining({
+        endpoint: '/responses',
+        method: 'POST',
+        statusCode: 200,
+        stream: false
+      })
     )
     expect(res.status).toHaveBeenCalledWith(200)
     expect(result).toMatchObject({
