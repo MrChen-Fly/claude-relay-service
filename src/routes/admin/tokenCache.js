@@ -4,6 +4,7 @@ const { authenticateAdmin } = require('../../middleware/auth')
 const logger = require('../../utils/logger')
 const RedisTokenCacheStorage = require('../../services/tokenCache/redisTokenCacheStorage')
 const tokenCacheMetricsService = require('../../services/tokenCache/tokenCacheMetricsService')
+const tokenCacheDiagnosticsService = require('../../services/tokenCache/tokenCacheDiagnosticsService')
 const openaiResponsesRelayService = require('../../services/relay/openaiResponsesRelayService')
 
 const router = express.Router()
@@ -103,6 +104,42 @@ router.get('/token-cache/entries', authenticateAdmin, async (req, res) => {
     return res.status(500).json({
       success: false,
       error: 'Failed to list token cache entries',
+      message: error.message
+    })
+  }
+})
+
+router.get('/token-cache/diagnostics', authenticateAdmin, async (req, res) => {
+  try {
+    const limit = parsePositiveInteger(req.query.limit, 100, 500)
+    const promptCacheKey =
+      typeof req.query.promptCacheKey === 'string' ? req.query.promptCacheKey : ''
+    const sessionHash = typeof req.query.sessionHash === 'string' ? req.query.sessionHash : ''
+    const eventType = typeof req.query.eventType === 'string' ? req.query.eventType : ''
+    const items = await tokenCacheDiagnosticsService.list({
+      limit,
+      promptCacheKey,
+      sessionHash,
+      eventType
+    })
+
+    return res.json({
+      success: true,
+      data: {
+        items,
+        filters: {
+          limit,
+          promptCacheKey,
+          sessionHash,
+          eventType
+        }
+      }
+    })
+  } catch (error) {
+    logger.error('Failed to list token cache diagnostics:', error)
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to list token cache diagnostics',
       message: error.message
     })
   }

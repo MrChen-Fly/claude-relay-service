@@ -9,6 +9,7 @@ const { authenticateAdmin } = require('../../middleware/auth')
 const logger = require('../../utils/logger')
 const config = require('../../../config/config')
 const systemLogService = require('../../services/systemLogService')
+const systemMonitorService = require('../../services/systemMonitorService')
 
 const router = express.Router()
 
@@ -271,6 +272,24 @@ router.get('/system-logs', authenticateAdmin, async (req, res) => {
     return res.status(500).json({
       success: false,
       error: 'Failed to get system logs',
+      message: error.message
+    })
+  }
+})
+
+router.get('/system-monitor', authenticateAdmin, async (req, res) => {
+  try {
+    const data = await systemMonitorService.getSnapshot()
+
+    return res.json({
+      success: true,
+      data
+    })
+  } catch (error) {
+    logger.error('❌ Failed to get system monitor snapshot:', error)
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to get system monitor snapshot',
       message: error.message
     })
   }

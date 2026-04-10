@@ -9,6 +9,13 @@ function normalizeText(value) {
   return value.replace(/\s+/g, ' ').trim()
 }
 
+function buildTextHash(value) {
+  return crypto
+    .createHash('sha256')
+    .update(String(value || ''))
+    .digest('hex')
+}
+
 function stringifyStructuredValue(value) {
   if (value === undefined || value === null) {
     return ''
@@ -333,6 +340,16 @@ function evaluateTokenCacheRequest(context = {}) {
     scopeKey,
     semanticEligible: !hasTooling,
     cacheStrategy: hasTooling ? 'exact_only' : 'semantic_first',
+    diagnostics: {
+      hasTooling,
+      messageCount: messages.length,
+      promptLength: promptText.length,
+      transcriptLength: messageText.length,
+      systemLength: systemText.length,
+      promptHash: buildTextHash(promptText),
+      transcriptHash: buildTextHash(messageText),
+      systemHash: buildTextHash(systemText)
+    },
     exactKeyInput: hasTooling
       ? buildToolingExactKeyInput({
           endpointPath: context.endpointPath,

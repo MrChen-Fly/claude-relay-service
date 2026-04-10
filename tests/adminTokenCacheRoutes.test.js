@@ -30,6 +30,10 @@ jest.mock('../src/services/tokenCache/tokenCacheMetricsService', () => ({
   getSnapshot: jest.fn()
 }))
 
+jest.mock('../src/services/tokenCache/tokenCacheDiagnosticsService', () => ({
+  list: jest.fn()
+}))
+
 jest.mock('../src/services/tokenCache/redisTokenCacheStorage', () =>
   jest.fn(() => mockTokenCacheStorage)
 )
@@ -53,6 +57,7 @@ jest.mock('../config/config', () => ({
 }))
 
 const tokenCacheMetricsService = require('../src/services/tokenCache/tokenCacheMetricsService')
+const tokenCacheDiagnosticsService = require('../src/services/tokenCache/tokenCacheDiagnosticsService')
 const tokenCacheRouter = require('../src/routes/admin/tokenCache')
 
 describe('admin token cache routes', () => {
@@ -126,6 +131,16 @@ describe('admin token cache routes', () => {
     })
     mockTokenCacheStorage.clearAll.mockResolvedValue(12)
     mockTokenCacheStorage.delete.mockResolvedValue(3)
+    tokenCacheDiagnosticsService.list.mockResolvedValue([
+      {
+        timestamp: 1710000000000,
+        eventType: 'miss',
+        promptCacheKey: 'session-key-1',
+        sessionHash: 'session-hash-1',
+        cacheStrategy: 'semantic_first',
+        promptHash: 'prompt-hash-1'
+      }
+    ])
   })
 
   it('returns prompt-cache style token cache stats', async () => {
@@ -208,6 +223,41 @@ describe('admin token cache routes', () => {
         nextCursor: '7',
         hasMore: true,
         limit: 5
+      }
+    })
+  })
+
+  it('returns filtered token cache diagnostics', async () => {
+    const response = await request(buildApp()).get(
+      '/admin/token-cache/diagnostics?limit=5&sessionHash=session-hash-1&eventType=miss'
+    )
+
+    expect(response.status).toBe(200)
+    expect(tokenCacheDiagnosticsService.list).toHaveBeenCalledWith({
+      limit: 5,
+      promptCacheKey: '',
+      sessionHash: 'session-hash-1',
+      eventType: 'miss'
+    })
+    expect(response.body).toEqual({
+      success: true,
+      data: {
+        items: [
+          {
+            timestamp: 1710000000000,
+            eventType: 'miss',
+            promptCacheKey: 'session-key-1',
+            sessionHash: 'session-hash-1',
+            cacheStrategy: 'semantic_first',
+            promptHash: 'prompt-hash-1'
+          }
+        ],
+        filters: {
+          limit: 5,
+          promptCacheKey: '',
+          sessionHash: 'session-hash-1',
+          eventType: 'miss'
+        }
       }
     })
   })

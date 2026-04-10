@@ -210,9 +210,13 @@ describe('prompt-cache token cache provider', () => {
     const metrics = {
       recordAsync: jest.fn()
     }
+    const diagnostics = {
+      recordAsync: jest.fn()
+    }
     const provider = new PromptCacheTokenCacheProvider({
       storage,
       metrics,
+      diagnostics,
       config: {
         ttlSeconds: 3600,
         maxEntries: 100
@@ -267,6 +271,20 @@ describe('prompt-cache token cache provider', () => {
       expect.objectContaining({
         hits: 1,
         exactHits: 1
+      })
+    )
+    expect(diagnostics.recordAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'store',
+        cacheStrategy: 'semantic_first'
+      })
+    )
+    expect(diagnostics.recordAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'hit',
+        layer: 'exact',
+        promptHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        transcriptHash: expect.stringMatching(/^[a-f0-9]{64}$/)
       })
     )
   })
@@ -829,11 +847,15 @@ describe('prompt-cache token cache provider', () => {
   })
 
   it('records misses for eligible uncached requests', async () => {
+    const diagnostics = {
+      recordAsync: jest.fn()
+    }
     const provider = new PromptCacheTokenCacheProvider({
       storage: new MemoryTokenCacheStorage(),
       metrics: {
         recordAsync: jest.fn()
-      }
+      },
+      diagnostics
     })
 
     await provider.lookup({
@@ -848,6 +870,13 @@ describe('prompt-cache token cache provider', () => {
     expect(provider.metrics.recordAsync).toHaveBeenCalledWith(
       expect.objectContaining({
         misses: 1
+      })
+    )
+    expect(diagnostics.recordAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'miss',
+        reason: 'cache_miss',
+        promptLength: 5
       })
     )
   })

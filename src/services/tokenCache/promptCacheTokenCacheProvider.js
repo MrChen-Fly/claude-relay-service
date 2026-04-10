@@ -12,6 +12,7 @@ class PromptCacheTokenCacheProvider extends TokenCacheProvider {
     this.storage = options.storage
     this.config = options.config || {}
     this.metrics = options.metrics || null
+    this.diagnostics = options.diagnostics || null
     this.exactCache =
       options.exactCache ||
       new ExactTokenCache(this.storage, {
@@ -81,6 +82,51 @@ class PromptCacheTokenCacheProvider extends TokenCacheProvider {
     return semanticMetrics
   }
 
+  _recordDiagnosticEvent(event = {}) {
+    if (!this.diagnostics?.recordAsync) {
+      return
+    }
+
+    this.diagnostics.recordAsync(event)
+  }
+
+  _buildDiagnosticEvent(context, evaluation, extra = {}) {
+    const diagnostics = evaluation?.diagnostics || {}
+
+    return {
+      timestamp: extra.timestamp || Date.now(),
+      eventType: extra.eventType || 'unknown',
+      layer: extra.layer || '',
+      reason: extra.reason || '',
+      provider: this.getName(),
+      accountId: context?.accountId || '',
+      accountName: context?.accountName || '',
+      requestedModel: context?.requestedModel || context?.requestBody?.model || '',
+      promptCacheKey: context?.promptCacheKey || '',
+      sessionHash: context?.sessionHash || '',
+      conversationId: context?.conversationId || '',
+      cacheKey: evaluation?.cacheKey || '',
+      scopeKey: evaluation?.scopeKey || '',
+      cacheStrategy: evaluation?.cacheStrategy || '',
+      semanticEligible: evaluation?.semanticEligible !== false,
+      toolCandidateCount: Number(
+        evaluation?.toolCandidateCount ||
+          (Array.isArray(evaluation?.toolResultCandidates)
+            ? evaluation.toolResultCandidates.length
+            : 0)
+      ),
+      messageCount: Number(diagnostics.messageCount || 0),
+      promptLength: Number(diagnostics.promptLength || 0),
+      transcriptLength: Number(diagnostics.transcriptLength || 0),
+      systemLength: Number(diagnostics.systemLength || 0),
+      promptHash: diagnostics.promptHash || '',
+      transcriptHash: diagnostics.transcriptHash || '',
+      systemHash: diagnostics.systemHash || '',
+      score: extra.score,
+      statusCode: extra.statusCode
+    }
+  }
+
   _resolveSemanticHitLayer(cacheKey, semanticHit = {}) {
     if (semanticHit.layer === 'semantic_verified') {
       return 'semantic_verified'
@@ -99,10 +145,13 @@ class PromptCacheTokenCacheProvider extends TokenCacheProvider {
       return evaluation
     }
 
+    const toolResultCandidates = extractToolResultCacheCandidates(context)
+
     return {
       ...evaluation,
       cacheKey: ExactTokenCache.generateKey(evaluation.exactKeyInput),
-      toolResultCandidates: extractToolResultCacheCandidates(context)
+      toolResultCandidates,
+      toolCandidateCount: toolResultCandidates.length
     }
   }
 
@@ -180,6 +229,12 @@ class PromptCacheTokenCacheProvider extends TokenCacheProvider {
         bypasses: 1,
         [`bypassReason:${evaluation.reason || 'unknown'}`]: 1
       })
+      this._recordDiagnosticEvent(
+        this._buildDiagnosticEvent(context, evaluation, {
+          eventType: 'bypass',
+          reason: evaluation.reason || 'unknown'
+        })
+      )
       return {
         hit: false,
         reason: evaluation.reason
@@ -203,6 +258,13 @@ class PromptCacheTokenCacheProvider extends TokenCacheProvider {
           if (semanticEntry) {
             const hitLayer = this._resolveSemanticHitLayer(evaluation.cacheKey, semanticHit)
             this._recordMetrics(this._buildHitMetrics(hitLayer))
+            this._recordDiagnosticEvent(
+              this._buildDiagnosticEvent(context, evaluation, {
+                eventType: 'hit',
+                layer: hitLayer,
+                score: semanticHit.score
+              })
+            )
             return this._buildHitResult(semanticEntry, hitLayer, semanticHit.score)
           }
         }
@@ -214,24 +276,48 @@ class PromptCacheTokenCacheProvider extends TokenCacheProvider {
             reason: error.reason,
             details: error.details
           })
+          this._recordDiagnosticEvent(
+            this._buildDiagnosticEvent(context, evaluation, {
+              eventType: 'semantic_skip',
+              reason: error.reason || 'input_too_large'
+            })
+          )
         } else {
           logger.warn('Prompt-cache semantic lookup failed', {
             provider: this.getName(),
             scopeKey: evaluation.scopeKey,
             message: error.message
           })
+          this._recordDiagnosticEvent(
+            this._buildDiagnosticEvent(context, evaluation, {
+              eventType: 'semantic_error',
+              reason: error.message || 'semantic_lookup_failed'
+            })
+          )
         }
       }
     }
 
     const exactHit = await this._lookupExactEntry(evaluation)
     if (exactHit) {
+      this._recordDiagnosticEvent(
+        this._buildDiagnosticEvent(context, evaluation, {
+          eventType: 'hit',
+          layer: 'exact'
+        })
+      )
       return exactHit
     }
 
     try {
       const toolResultHit = await this._lookupToolResultEntry(context, evaluation)
       if (toolResultHit) {
+        this._recordDiagnosticEvent(
+          this._buildDiagnosticEvent(context, evaluation, {
+            eventType: 'hit',
+            layer: toolResultHit.headers?.['x-token-cache-layer'] || 'tool_result'
+          })
+        )
         return toolResultHit
       }
     } catch (error) {
@@ -239,11 +325,23 @@ class PromptCacheTokenCacheProvider extends TokenCacheProvider {
         provider: this.toolResultCacheProvider.getName?.() || 'custom',
         message: error.message
       })
+      this._recordDiagnosticEvent(
+        this._buildDiagnosticEvent(context, evaluation, {
+          eventType: 'tool_result_error',
+          reason: error.message || 'tool_result_lookup_failed'
+        })
+      )
     }
 
     this._recordMetrics({
       misses: 1
     })
+    this._recordDiagnosticEvent(
+      this._buildDiagnosticEvent(context, evaluation, {
+        eventType: 'miss',
+        reason: 'cache_miss'
+      })
+    )
 
     return {
       hit: false,
@@ -285,12 +383,24 @@ class PromptCacheTokenCacheProvider extends TokenCacheProvider {
             reason: error.reason,
             details: error.details
           })
+          this._recordDiagnosticEvent(
+            this._buildDiagnosticEvent(context, evaluation, {
+              eventType: 'semantic_store_skip',
+              reason: error.reason || 'input_too_large'
+            })
+          )
         } else {
           logger.warn('Prompt-cache semantic artifact store failed', {
             cacheKey: evaluation.cacheKey,
             provider: this.getName(),
             message: error.message
           })
+          this._recordDiagnosticEvent(
+            this._buildDiagnosticEvent(context, evaluation, {
+              eventType: 'semantic_store_error',
+              reason: error.message || 'semantic_store_failed'
+            })
+          )
         }
       }
     } else {
@@ -313,6 +423,12 @@ class PromptCacheTokenCacheProvider extends TokenCacheProvider {
     this._recordMetrics({
       stores: 1
     })
+    this._recordDiagnosticEvent(
+      this._buildDiagnosticEvent(context, evaluation, {
+        eventType: 'store',
+        statusCode: response.statusCode || response.status || 200
+      })
+    )
 
     try {
       const toolResultStoreResult = await this._storeToolResultArtifacts(
@@ -330,6 +446,12 @@ class PromptCacheTokenCacheProvider extends TokenCacheProvider {
         provider: this.toolResultCacheProvider.getName?.() || 'custom',
         message: error.message
       })
+      this._recordDiagnosticEvent(
+        this._buildDiagnosticEvent(context, evaluation, {
+          eventType: 'tool_result_store_error',
+          reason: error.message || 'tool_result_store_failed'
+        })
+      )
     }
 
     return {

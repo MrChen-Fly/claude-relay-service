@@ -6,6 +6,7 @@ const OpenAISemanticProvider = require('./openAISemanticProvider')
 const SemanticTokenCacheEngine = require('./semanticTokenCacheEngine')
 const StorageBackedToolResultCacheProvider = require('./storageBackedToolResultCacheProvider')
 const tokenCacheMetricsService = require('./tokenCacheMetricsService')
+const tokenCacheDiagnosticsService = require('./tokenCacheDiagnosticsService')
 
 function createDefaultTokenCacheProvider() {
   const tokenCacheConfig = config.tokenCache
@@ -63,7 +64,8 @@ function createDefaultTokenCacheProvider() {
     semanticEngine,
     toolResultCacheProvider,
     config: tokenCacheConfig,
-    metrics: tokenCacheMetricsService
+    metrics: tokenCacheMetricsService,
+    diagnostics: tokenCacheDiagnosticsService
   })
 }
 
