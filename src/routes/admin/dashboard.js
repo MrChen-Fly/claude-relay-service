@@ -140,8 +140,6 @@ router.get('/dashboard', authenticateAdmin, async (req, res) => {
       totalRequestsUsed = 0,
       totalInputTokensUsed = 0,
       totalOutputTokensUsed = 0,
-      totalCacheCreateTokensUsed = 0,
-      totalCacheReadTokensUsed = 0,
       totalAllTokensUsed = 0,
       activeApiKeys = 0,
       totalApiKeys = 0
@@ -151,8 +149,6 @@ router.get('/dashboard', authenticateAdmin, async (req, res) => {
       totalRequestsUsed = globalStats.requests
       totalInputTokensUsed = globalStats.inputTokens
       totalOutputTokensUsed = globalStats.outputTokens
-      totalCacheCreateTokensUsed = globalStats.cacheCreateTokens
-      totalCacheReadTokensUsed = globalStats.cacheReadTokens
       totalAllTokensUsed = globalStats.allTokens
       totalTokensUsed = totalAllTokensUsed
       totalApiKeys = apiKeyCount.total
@@ -167,8 +163,6 @@ router.get('/dashboard', authenticateAdmin, async (req, res) => {
           totalRequestsUsed += usage.requests || 0
           totalInputTokensUsed += usage.inputTokens || 0
           totalOutputTokensUsed += usage.outputTokens || 0
-          totalCacheCreateTokensUsed += usage.cacheCreateTokens || 0
-          totalCacheReadTokensUsed += usage.cacheReadTokens || 0
           totalAllTokensUsed += usage.allTokens || 0
         }
         if (key.isActive) {
@@ -313,8 +307,6 @@ router.get('/dashboard', authenticateAdmin, async (req, res) => {
         totalRequestsUsed,
         totalInputTokensUsed,
         totalOutputTokensUsed,
-        totalCacheCreateTokensUsed,
-        totalCacheReadTokensUsed,
         totalAllTokensUsed
       },
       recentActivity: {
@@ -322,9 +314,7 @@ router.get('/dashboard', authenticateAdmin, async (req, res) => {
         requestsToday: todayStats.requestsToday,
         tokensToday: todayStats.tokensToday,
         inputTokensToday: todayStats.inputTokensToday,
-        outputTokensToday: todayStats.outputTokensToday,
-        cacheCreateTokensToday: todayStats.cacheCreateTokensToday || 0,
-        cacheReadTokensToday: todayStats.cacheReadTokensToday || 0
+        outputTokensToday: todayStats.outputTokensToday
       },
       systemAverages: {
         rpm: systemAverages.systemRPM,

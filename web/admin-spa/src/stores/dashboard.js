@@ -1,8 +1,194 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 
-import { getDashboardApi, getUsageCostsApi, getUsageStatsApi } from '@/utils/http_apis'
+import {
+  clearTokenCacheEntriesApi,
+  deleteTokenCacheEntryApi,
+  getDashboardApi,
+  getTokenCacheEntriesApi,
+  getTokenCacheStatsApi,
+  getUsageCostsApi,
+  getUsageStatsApi
+} from '@/utils/http_apis'
 import { showToast } from '@/utils/tools'
+
+const createEmptyTokenCacheSummary = () => ({
+  requests: 0,
+  eligibleRequests: 0,
+  hits: 0,
+  misses: 0,
+  bypasses: 0,
+  stores: 0,
+  exactHits: 0,
+  toolResultHits: 0,
+  toolResultStores: 0,
+  semanticHits: 0,
+  semanticChunkedRequests: 0,
+  semanticChunkedChunks: 0,
+  semanticSkips: 0,
+  semanticVerifiedHits: 0,
+  grayZoneChecks: 0,
+  providerCalls: 0,
+  providerErrors: 0,
+  hitRate: 0,
+  missRate: 0,
+  eligibleRate: 0,
+  bypassRate: 0,
+  storeRate: 0,
+  exactHitShare: 0,
+  toolResultHitShare: 0,
+  semanticHitShare: 0,
+  semanticSkipShare: 0,
+  semanticVerifiedShare: 0,
+  providerErrorRate: 0
+})
+
+const createEmptyTokenCacheMetrics = () => ({
+  enabled: false,
+  windowMinutes: 60,
+  recent: createEmptyTokenCacheSummary(),
+  total: createEmptyTokenCacheSummary(),
+  bypassReasons: {
+    recent: [],
+    total: []
+  },
+  semanticSkipReasons: {
+    recent: [],
+    total: []
+  },
+  config: {
+    enabled: false,
+    semanticEnabled: false,
+    namespace: '',
+    ttlSeconds: 0,
+    maxEntries: 0,
+    highThreshold: 0,
+    lowThreshold: 0,
+    grayZoneVerifierEnabled: false,
+    useANNIndex: false,
+    baseUrl: '',
+    embedModel: '',
+    embedInputStrategy: 'skip',
+    embedMaxInputChars: 0,
+    embedMaxInputBytes: 0,
+    embedChunkMaxChunks: 0,
+    embedChunkOverlapChars: 0,
+    verifyModel: '',
+    toolResultEnabled: false,
+    toolResultTtlSeconds: 0,
+    toolResultAllowedToolsCount: 0,
+    requestTimeoutMs: 0
+  }
+})
+
+const normalizeReasonBreakdown = (items) =>
+  Array.isArray(items)
+    ? items
+        .map((item) => ({
+          reason: item?.reason || 'unknown',
+          count: Number(item?.count) || 0
+        }))
+        .filter((item) => item.count > 0)
+    : []
+
+const normalizeTokenCacheMetrics = (payload = {}) => {
+  const defaults = createEmptyTokenCacheMetrics()
+
+  return {
+    ...defaults,
+    ...payload,
+    recent: {
+      ...defaults.recent,
+      ...(payload?.recent || {})
+    },
+    total: {
+      ...defaults.total,
+      ...(payload?.total || {})
+    },
+    bypassReasons: {
+      recent: normalizeReasonBreakdown(payload?.bypassReasons?.recent),
+      total: normalizeReasonBreakdown(payload?.bypassReasons?.total)
+    },
+    semanticSkipReasons: {
+      recent: normalizeReasonBreakdown(payload?.semanticSkipReasons?.recent),
+      total: normalizeReasonBreakdown(payload?.semanticSkipReasons?.total)
+    },
+    config: {
+      ...defaults.config,
+      ...(payload?.config || {})
+    }
+  }
+}
+
+const createEmptyTokenCachePagination = () => ({
+  cursor: '0',
+  nextCursor: '0',
+  hasMore: false,
+  limit: 10
+})
+
+const createEmptyTokenCacheStorageStats = () => ({
+  namespace: '',
+  entryCount: 0,
+  promptCount: 0,
+  embeddingCount: 0,
+  metricsKeyCount: 0,
+  totalKeys: 0
+})
+
+const createEmptyTokenCacheStats = () => ({
+  metrics: createEmptyTokenCacheMetrics(),
+  storage: createEmptyTokenCacheStorageStats()
+})
+
+const normalizeTokenCacheEntry = (item = {}) => ({
+  key: typeof item?.key === 'string' ? item.key : '',
+  statusCode: Number(item?.statusCode) || 200,
+  createdAt: Number(item?.createdAt) || 0,
+  ttlSeconds: Number(item?.ttlSeconds) || 0
+})
+
+const normalizeTokenCacheStorageStats = (payload = {}) => ({
+  namespace: typeof payload?.namespace === 'string' ? payload.namespace : '',
+  entryCount: Number(payload?.entryCount) || 0,
+  promptCount: Number(payload?.promptCount) || 0,
+  embeddingCount: Number(payload?.embeddingCount) || 0,
+  metricsKeyCount: Number(payload?.metricsKeyCount) || 0,
+  totalKeys: Number(payload?.totalKeys) || 0
+})
+
+const normalizeTokenCacheStatsResponse = (payload = {}) => ({
+  metrics: normalizeTokenCacheMetrics(payload?.metrics),
+  storage: normalizeTokenCacheStorageStats(payload?.storage)
+})
+
+const normalizeTokenCachePagination = (payload = {}, fallbackLimit = 10) => ({
+  cursor: typeof payload?.cursor === 'string' ? payload.cursor : '0',
+  nextCursor: typeof payload?.nextCursor === 'string' ? payload.nextCursor : '0',
+  hasMore: Boolean(payload?.hasMore),
+  limit:
+    Number.isFinite(Number(payload?.limit)) && Number(payload.limit) > 0
+      ? Number(payload.limit)
+      : fallbackLimit
+})
+
+const mergeTokenCacheEntries = (currentItems, nextItems) => {
+  const merged = new Map()
+
+  currentItems.forEach((item) => {
+    if (item?.key) {
+      merged.set(item.key, item)
+    }
+  })
+
+  nextItems.forEach((item) => {
+    if (item?.key) {
+      merged.set(item.key, item)
+    }
+  })
+
+  return Array.from(merged.values())
+}
 
 export const useDashboardStore = defineStore('dashboard', () => {
   // 状态
@@ -32,10 +218,6 @@ export const useDashboardStore = defineStore('dashboard', () => {
     totalTokens: 0,
     totalInputTokens: 0,
     totalOutputTokens: 0,
-    totalCacheCreateTokens: 0,
-    totalCacheReadTokens: 0,
-    todayCacheCreateTokens: 0,
-    todayCacheReadTokens: 0,
     systemRPM: 0,
     systemTPM: 0,
     realtimeRPM: 0,
@@ -68,6 +250,21 @@ export const useDashboardStore = defineStore('dashboard', () => {
   })
 
   // 本地偏好
+  const tokenCacheEntries = ref([])
+  const tokenCacheEntriesLoading = ref(false)
+  const tokenCacheEntriesLoadingMore = ref(false)
+  const tokenCacheEntriesDeletingKey = ref('')
+  const tokenCacheEntriesError = ref('')
+  const tokenCacheEntriesPagination = ref(createEmptyTokenCachePagination())
+  const tokenCacheClearing = ref(false)
+  const tokenCacheStats = ref(createEmptyTokenCacheStats())
+  const tokenCacheStatsLoading = ref(false)
+  const tokenCacheStatsError = ref('')
+  const tokenCacheMetrics = computed(() => tokenCacheStats.value.metrics)
+  const tokenCacheStorageStats = computed(() => tokenCacheStats.value.storage)
+  const tokenCacheStorageLoading = tokenCacheStatsLoading
+  const tokenCacheStorageError = tokenCacheStatsError
+
   const STORAGE_KEYS = {
     preset: 'dashboard:date:preset',
     granularity: 'dashboard:trend:granularity'
@@ -276,10 +473,6 @@ export const useDashboardStore = defineStore('dashboard', () => {
           totalTokens: overview.totalTokensUsed || 0,
           totalInputTokens: overview.totalInputTokensUsed || 0,
           totalOutputTokens: overview.totalOutputTokensUsed || 0,
-          totalCacheCreateTokens: overview.totalCacheCreateTokensUsed || 0,
-          totalCacheReadTokens: overview.totalCacheReadTokensUsed || 0,
-          todayCacheCreateTokens: recentActivity.cacheCreateTokensToday || 0,
-          todayCacheReadTokens: recentActivity.cacheReadTokensToday || 0,
           systemRPM: systemAverages.rpm || 0,
           systemTPM: systemAverages.tpm || 0,
           realtimeRPM: realtimeMetrics.rpm || 0,
@@ -689,6 +882,153 @@ export const useDashboardStore = defineStore('dashboard', () => {
     ])
   }
 
+  function resetTokenCacheEntriesState() {
+    tokenCacheEntries.value = []
+    tokenCacheEntriesError.value = ''
+    tokenCacheEntriesPagination.value = createEmptyTokenCachePagination()
+  }
+
+  async function loadTokenCacheStats(options = {}) {
+    const {
+      windowMinutes = tokenCacheMetrics.value?.windowMinutes ||
+        createEmptyTokenCacheMetrics().windowMinutes
+    } = options
+
+    if (tokenCacheStatsLoading.value) {
+      return false
+    }
+
+    tokenCacheStatsLoading.value = true
+    tokenCacheStatsError.value = ''
+
+    try {
+      const response = await getTokenCacheStatsApi({ windowMinutes })
+      if (!response?.success) {
+        tokenCacheStorageError.value = response?.message || '加载缓存统计失败'
+        return false
+      }
+
+      tokenCacheStats.value = normalizeTokenCacheStatsResponse(response?.data)
+      return true
+    } catch (error) {
+      tokenCacheStorageError.value = error?.message || '加载缓存统计失败'
+      return false
+    } finally {
+      tokenCacheStorageLoading.value = false
+    }
+  }
+
+  const loadTokenCacheStorageStats = loadTokenCacheStats
+
+  async function loadTokenCacheEntries(options = {}) {
+    const {
+      reset = true,
+      limit = tokenCacheEntriesPagination.value.limit || createEmptyTokenCachePagination().limit
+    } = options
+
+    if (reset) {
+      if (tokenCacheEntriesLoading.value) return false
+      tokenCacheEntriesLoading.value = true
+    } else {
+      if (tokenCacheEntriesLoadingMore.value || !tokenCacheEntriesPagination.value.hasMore) {
+        return false
+      }
+      tokenCacheEntriesLoadingMore.value = true
+    }
+
+    tokenCacheEntriesError.value = ''
+
+    try {
+      const response = await getTokenCacheEntriesApi({
+        limit,
+        cursor: reset ? '0' : tokenCacheEntriesPagination.value.nextCursor || '0'
+      })
+
+      if (!response?.success) {
+        tokenCacheEntriesError.value = response?.message || '加载缓存条目失败'
+        return false
+      }
+
+      const items = Array.isArray(response?.data?.items)
+        ? response.data.items.map(normalizeTokenCacheEntry).filter((item) => item.key)
+        : []
+      const pagination = normalizeTokenCachePagination(response?.data?.pagination, limit)
+
+      tokenCacheEntries.value = reset
+        ? items
+        : mergeTokenCacheEntries(tokenCacheEntries.value, items)
+      tokenCacheEntriesPagination.value = pagination
+      return true
+    } catch (error) {
+      tokenCacheEntriesError.value = error?.message || '加载缓存条目失败'
+      return false
+    } finally {
+      if (reset) {
+        tokenCacheEntriesLoading.value = false
+      } else {
+        tokenCacheEntriesLoadingMore.value = false
+      }
+    }
+  }
+
+  function loadMoreTokenCacheEntries() {
+    return loadTokenCacheEntries({ reset: false })
+  }
+
+  async function clearTokenCache() {
+    if (tokenCacheClearing.value) {
+      return false
+    }
+
+    tokenCacheClearing.value = true
+
+    try {
+      const response = await clearTokenCacheEntriesApi()
+      if (!response?.success) {
+        showToast(response?.message || '清空缓存失败', 'error')
+        return false
+      }
+
+      resetTokenCacheEntriesState()
+      tokenCacheStats.value = createEmptyTokenCacheStats()
+      tokenCacheStatsError.value = ''
+      showToast(response.message || '缓存已清空', 'success')
+      return true
+    } catch (error) {
+      showToast(error?.message || '清空缓存失败', 'error')
+      return false
+    } finally {
+      tokenCacheClearing.value = false
+    }
+  }
+
+  async function deleteTokenCacheEntry(key) {
+    const normalizedKey = String(key || '').trim()
+    if (!normalizedKey || tokenCacheEntriesDeletingKey.value) {
+      return false
+    }
+
+    tokenCacheEntriesDeletingKey.value = normalizedKey
+
+    try {
+      const response = await deleteTokenCacheEntryApi(normalizedKey)
+      if (!response?.success) {
+        showToast(response?.message || '删除缓存条目失败', 'error')
+        return false
+      }
+
+      tokenCacheEntries.value = tokenCacheEntries.value.filter((item) => item.key !== normalizedKey)
+      await loadTokenCacheStorageStats()
+      showToast(response.message || '缓存条目已删除', 'success')
+      return true
+    } catch (error) {
+      showToast(error?.message || '删除缓存条目失败', 'error')
+      return false
+    } finally {
+      tokenCacheEntriesDeletingKey.value = ''
+    }
+  }
+
   function setAccountUsageGroup(group) {
     accountUsageGroup.value = group
     return loadAccountUsageTrend(group, getEffectiveGranularity())
@@ -720,6 +1060,17 @@ export const useDashboardStore = defineStore('dashboard', () => {
     dashboardModelStats,
     apiKeysTrendData,
     accountUsageTrendData,
+    tokenCacheEntries,
+    tokenCacheEntriesLoading,
+    tokenCacheEntriesLoadingMore,
+    tokenCacheEntriesDeletingKey,
+    tokenCacheEntriesError,
+    tokenCacheEntriesPagination,
+    tokenCacheClearing,
+    tokenCacheMetrics,
+    tokenCacheStorageStats,
+    tokenCacheStorageLoading,
+    tokenCacheStorageError,
     dateFilter,
     trendGranularity,
     apiKeysTrendMetric,
@@ -734,6 +1085,11 @@ export const useDashboardStore = defineStore('dashboard', () => {
     loadModelStats,
     loadApiKeysTrend,
     loadAccountUsageTrend,
+    loadTokenCacheEntries,
+    loadTokenCacheStorageStats,
+    loadMoreTokenCacheEntries,
+    clearTokenCache,
+    deleteTokenCacheEntry,
     setDateFilterPreset,
     onCustomDateRangeChange,
     setTrendGranularity,

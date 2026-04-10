@@ -16,6 +16,7 @@ const { updateRateLimitCounters } = require('../utils/rateLimitHelper')
 const { IncrementalSSEParser } = require('../utils/sseParser')
 const { getSafeMessage } = require('../utils/errorSanitizer')
 const { inferRequestCapabilities } = require('../services/openaiProtocol/capabilityProfile')
+const { extractStableTokenCacheSessionKey } = require('../services/tokenCache/tokenCacheProvider')
 
 // Codex CLI 系统提示词（非 Codex CLI 客户端请求时注入，统一端点也使用）
 const CODEX_CLI_INSTRUCTIONS =
@@ -284,13 +285,7 @@ const handleResponses = async (req, res) => {
 
     // 从请求头或请求体中提取会话 ID
     // NOTE: For some clients, prompt_cache_key is the only stable per-session key.
-    const sessionId =
-      req.headers['session_id'] ||
-      req.headers['x-session-id'] ||
-      req.body?.session_id ||
-      req.body?.conversation_id ||
-      req.body?.prompt_cache_key ||
-      null
+    const sessionId = extractStableTokenCacheSessionKey(req, req.body) || null
 
     sessionHash = sessionId ? crypto.createHash('sha256').update(sessionId).digest('hex') : null
 

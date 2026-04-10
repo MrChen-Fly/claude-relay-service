@@ -104,6 +104,56 @@ const config = {
   // ⏱️ 请求超时配置
   requestTimeout: parseInt(process.env.REQUEST_TIMEOUT) || 600000, // 默认 10 分钟
 
+  // 🧠 Token Cache 配置（参考 prompt-cache 分层设计）
+  tokenCache: {
+    enabled: process.env.TOKEN_CACHE_ENABLED === 'true',
+    namespace: process.env.TOKEN_CACHE_NAMESPACE || 'token_cache:openai_responses',
+    ttlSeconds: parseInt(process.env.TOKEN_CACHE_TTL_HOURS || '', 10)
+      ? parseInt(process.env.TOKEN_CACHE_TTL_HOURS, 10) * 3600
+      : 24 * 3600,
+    maxEntries: parseInt(process.env.TOKEN_CACHE_MAX_ENTRIES) || 100000,
+    semanticEnabled: process.env.TOKEN_CACHE_SEMANTIC_ENABLED === 'true',
+    highThreshold: parseFloat(process.env.TOKEN_CACHE_HIGH_THRESHOLD) || 0.7,
+    lowThreshold: parseFloat(process.env.TOKEN_CACHE_LOW_THRESHOLD) || 0.3,
+    enableGrayZoneVerifier: process.env.TOKEN_CACHE_ENABLE_GRAY_ZONE_VERIFIER !== 'false',
+    useANNIndex: process.env.TOKEN_CACHE_USE_ANN_INDEX !== 'false',
+    openaiApiKey: process.env.TOKEN_CACHE_OPENAI_API_KEY || process.env.OPENAI_API_KEY || '',
+    openaiBaseUrl:
+      process.env.TOKEN_CACHE_OPENAI_BASE_URL ||
+      process.env.OPENAI_BASE_URL ||
+      'https://api.openai.com/v1',
+    openaiEmbedModel: process.env.TOKEN_CACHE_OPENAI_EMBED_MODEL || 'text-embedding-3-small',
+    openaiEmbedInputStrategy: process.env.TOKEN_CACHE_OPENAI_EMBED_INPUT_STRATEGY || 'skip',
+    openaiEmbedMaxInputChars: parseInt(process.env.TOKEN_CACHE_OPENAI_EMBED_MAX_INPUT_CHARS, 10)
+      ? parseInt(process.env.TOKEN_CACHE_OPENAI_EMBED_MAX_INPUT_CHARS, 10)
+      : 0,
+    openaiEmbedMaxInputBytes: parseInt(process.env.TOKEN_CACHE_OPENAI_EMBED_MAX_INPUT_BYTES, 10)
+      ? parseInt(process.env.TOKEN_CACHE_OPENAI_EMBED_MAX_INPUT_BYTES, 10)
+      : 0,
+    openaiEmbedChunkMaxChunks: parseInt(process.env.TOKEN_CACHE_OPENAI_EMBED_CHUNK_MAX_CHUNKS, 10)
+      ? parseInt(process.env.TOKEN_CACHE_OPENAI_EMBED_CHUNK_MAX_CHUNKS, 10)
+      : 0,
+    openaiEmbedChunkOverlapChars: parseInt(
+      process.env.TOKEN_CACHE_OPENAI_EMBED_CHUNK_OVERLAP_CHARS,
+      10
+    )
+      ? parseInt(process.env.TOKEN_CACHE_OPENAI_EMBED_CHUNK_OVERLAP_CHARS, 10)
+      : 0,
+    openaiVerifyModel: process.env.TOKEN_CACHE_OPENAI_VERIFY_MODEL || 'gpt-4o-mini',
+    toolResultEnabled: process.env.TOKEN_CACHE_TOOL_RESULT_ENABLED === 'true',
+    toolResultTtlSeconds: parseInt(process.env.TOKEN_CACHE_TOOL_RESULT_TTL_HOURS || '', 10)
+      ? parseInt(process.env.TOKEN_CACHE_TOOL_RESULT_TTL_HOURS, 10) * 3600
+      : 24 * 3600,
+    toolResultAllowedTools: process.env.TOKEN_CACHE_TOOL_RESULT_ALLOWED_TOOLS
+      ? process.env.TOKEN_CACHE_TOOL_RESULT_ALLOWED_TOOLS.split(',')
+          .map((toolName) => toolName.trim())
+          .filter(Boolean)
+      : [],
+    requestTimeoutMs: parseInt(process.env.TOKEN_CACHE_HTTP_TIMEOUT_SECONDS || '', 10)
+      ? parseInt(process.env.TOKEN_CACHE_HTTP_TIMEOUT_SECONDS, 10) * 1000
+      : 30000
+  },
+
   // 📈 使用限制
   limits: {
     defaultTokenLimit: parseInt(process.env.DEFAULT_TOKEN_LIMIT) || 1000000

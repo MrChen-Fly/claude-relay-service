@@ -49,6 +49,17 @@ export const getTempUnavailableApi = () =>
 export const getUsageCostsApi = (period) =>
   request({ url: `/admin/usage-costs?period=${period}`, method: 'GET' })
 export const getUsageStatsApi = (url) => request({ url, method: 'GET' })
+export const getTokenCacheStatsApi = (params) =>
+  request({ url: '/admin/token-cache/stats', method: 'GET', params })
+export const getTokenCacheEntriesApi = (params) =>
+  request({ url: '/admin/token-cache/entries', method: 'GET', params })
+export const clearTokenCacheEntriesApi = () =>
+  request({ url: '/admin/token-cache/entries', method: 'DELETE' })
+export const deleteTokenCacheEntryApi = (key) =>
+  request({
+    url: `/admin/token-cache/entries/${encodeURIComponent(key)}`,
+    method: 'DELETE'
+  })
 
 // 客户端
 export const getSupportedClientsApi = () =>

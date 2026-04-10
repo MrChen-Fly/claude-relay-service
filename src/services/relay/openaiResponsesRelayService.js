@@ -19,6 +19,13 @@ const {
   shouldRetryWithAlternateProtocol
 } = require('../openaiProtocol/upstreamProtocolHelper')
 const { normalizeResponsesToolingRequest } = require('../openaiProtocol/toolingNormalizer')
+const {
+  NoopTokenCacheProvider,
+  buildTokenCacheRequestContext,
+  extractPromptCacheKey,
+  extractStableTokenCacheSessionKey
+} = require('../tokenCache/tokenCacheProvider')
+const createDefaultTokenCacheProvider = require('../tokenCache/createDefaultTokenCacheProvider')
 
 // lastUsedAt 更新节流（每账户 60 秒内最多更新一次，使用 LRU 防止内存泄漏）
 const lastUsedAtThrottle = new LRUCache(1000) // 最多缓存 1000 个账户
@@ -50,28 +57,27 @@ function extractCacheCreationTokens(usageData) {
   return 0
 }
 
-function extractPromptCacheKey(...payloads) {
-  for (const payload of payloads) {
-    if (!payload || typeof payload !== 'object') {
-      continue
-    }
-
-    const rawPromptCacheKey = payload.prompt_cache_key ?? payload.promptCacheKey
-    if (typeof rawPromptCacheKey === 'string' && rawPromptCacheKey.trim()) {
-      return rawPromptCacheKey.trim()
-    }
-  }
-
-  return ''
-}
-
 function toSSE(event) {
   return `data: ${JSON.stringify(event)}\n\n`
 }
 
 class OpenAIResponsesRelayService {
-  constructor() {
+  constructor(tokenCacheProvider = new NoopTokenCacheProvider()) {
     this.defaultTimeout = config.requestTimeout || 600000
+    this.tokenCacheProvider = tokenCacheProvider
+  }
+
+  setTokenCacheProvider(provider = null) {
+    this.tokenCacheProvider = provider || new NoopTokenCacheProvider()
+    return this.tokenCacheProvider
+  }
+
+  _getTokenCacheProvider() {
+    if (!this.tokenCacheProvider) {
+      this.tokenCacheProvider = new NoopTokenCacheProvider()
+    }
+
+    return this.tokenCacheProvider
   }
 
   // 节流更新 lastUsedAt
@@ -222,9 +228,9 @@ class OpenAIResponsesRelayService {
     let concurrencyAcquired = false
     let leaseRefreshInterval = null
     let releaseConcurrencyInFinally = true
-    const sessionId = req.headers['session_id'] || req.body?.session_id
-    const sessionHash = sessionId
-      ? crypto.createHash('sha256').update(sessionId).digest('hex')
+    const sessionKey = extractStableTokenCacheSessionKey(req, req.body)
+    const sessionHash = sessionKey
+      ? crypto.createHash('sha256').update(sessionKey).digest('hex')
       : null
 
     try {
@@ -246,8 +252,16 @@ class OpenAIResponsesRelayService {
       res.once('close', handleClientDisconnect)
 
       const attempts = this._buildAttempts(req, options)
+      const lookupAttempt = attempts[0] || null
+      const lookupTokenCacheContext = this._buildTokenCacheContext(lookupAttempt, req, fullAccount)
+      const tokenCacheHitServed = await this._tryServeTokenCacheHit(res, lookupTokenCacheContext)
+      if (tokenCacheHitServed) {
+        req.removeListener('close', handleClientDisconnect)
+        res.removeListener('close', handleClientDisconnect)
+        return
+      }
+
       const isStreamRequest = attempts.some((attempt) => !!attempt.body?.stream)
-      const primaryAttempt = attempts[0] || {}
 
       concurrencyAcquired = await this._acquireConcurrencySlot(fullAccount, requestId, {
         isStream: isStreamRequest
@@ -383,7 +397,13 @@ class OpenAIResponsesRelayService {
       }
 
       const responseAdapter = this._createResponseAdapter(selectedAttempt)
-      const requestMetadata = this._buildRequestMetadata(selectedAttempt, req)
+      const tokenCacheContext =
+        lookupTokenCacheContext || this._buildTokenCacheContext(selectedAttempt, req, fullAccount)
+      const requestMetadata = this._buildRequestMetadata(
+        lookupAttempt || selectedAttempt,
+        req,
+        tokenCacheContext
+      )
 
       if (response.status === 429) {
         const { resetsInSeconds, errorData } = await this._handle429Error(
@@ -517,7 +537,8 @@ class OpenAIResponsesRelayService {
           handleClientDisconnect,
           req,
           requestMetadata,
-          responseAdapter
+          responseAdapter,
+          tokenCacheContext
         )
       }
 
@@ -537,6 +558,7 @@ class OpenAIResponsesRelayService {
           req,
           requestMetadata,
           responseAdapter,
+          tokenCacheContext,
           async () => {
             if (leaseRefreshInterval) {
               clearInterval(leaseRefreshInterval)
@@ -559,15 +581,6 @@ class OpenAIResponsesRelayService {
         )
       }
 
-      const responseData = response.data
-      const usageData = responseData?.usage || responseData?.response?.usage || null
-      const actualModel =
-        responseData?.model ||
-        responseData?.response?.model ||
-        selectedAttempt.requestedModel ||
-        selectedAttempt.body?.model ||
-        null
-
       return this._handleNormalResponse(
         response,
         res,
@@ -576,7 +589,8 @@ class OpenAIResponsesRelayService {
         selectedAttempt.requestedModel || selectedAttempt.body?.model,
         req._serviceTier || null,
         responseAdapter,
-        requestMetadata
+        requestMetadata,
+        tokenCacheContext
       )
     } catch (error) {
       if (abortController && !abortController.signal.aborted) {
@@ -956,14 +970,142 @@ class OpenAIResponsesRelayService {
     return headers
   }
 
-  _buildRequestMetadata(selectedAttempt, req) {
-    const promptCacheKey = extractPromptCacheKey(selectedAttempt?.body, req?.body)
+  _buildRequestMetadata(selectedAttempt, req, tokenCacheContext = null) {
+    const promptCacheKey =
+      tokenCacheContext?.promptCacheKey || extractPromptCacheKey(selectedAttempt?.body, req?.body)
     if (!promptCacheKey) {
       return null
     }
 
     return {
       promptCacheKey
+    }
+  }
+
+  _buildTokenCacheContext(selectedAttempt, req, account) {
+    return buildTokenCacheRequestContext({
+      req,
+      attempt: selectedAttempt,
+      account,
+      accountType: 'openai-responses',
+      requestedModel: selectedAttempt?.requestedModel || selectedAttempt?.body?.model || null,
+      clientStream: selectedAttempt?.clientStream
+    })
+  }
+
+  _applyTokenCacheHitHeaders(res, headers = {}) {
+    for (const [headerName, headerValue] of Object.entries(headers)) {
+      if (headerValue !== undefined && headerValue !== null && headerValue !== '') {
+        res.setHeader(headerName, headerValue)
+      }
+    }
+  }
+
+  _writeCachedStreamResponse(res, statusCode, responseBody) {
+    const streamEvents = this._buildCachedStreamEvents(responseBody)
+
+    res.setHeader('Content-Type', 'text/event-stream')
+    res.setHeader('Cache-Control', 'no-cache')
+    res.setHeader('Connection', 'keep-alive')
+    res.setHeader('X-Accel-Buffering', 'no')
+    res.status(statusCode)
+
+    if (Array.isArray(streamEvents) && typeof res.write === 'function') {
+      for (const event of streamEvents) {
+        res.write(event)
+      }
+    }
+
+    if (typeof res.end === 'function') {
+      res.end()
+    }
+  }
+
+  async _tryServeTokenCacheHit(res, tokenCacheContext) {
+    if (!tokenCacheContext) {
+      return false
+    }
+
+    const provider = this._getTokenCacheProvider()
+    if (!provider || typeof provider.lookup !== 'function') {
+      return false
+    }
+
+    let lookupResult = null
+    try {
+      lookupResult = await provider.lookup(tokenCacheContext)
+    } catch (error) {
+      logger.warn('OpenAI-Responses token cache lookup failed', {
+        accountId: tokenCacheContext.accountId,
+        model: tokenCacheContext.requestedModel,
+        message: error.message,
+        provider: provider.getName?.() || 'custom'
+      })
+      return false
+    }
+
+    if (!lookupResult || lookupResult.hit !== true) {
+      return false
+    }
+
+    if (lookupResult.headers && typeof lookupResult.headers === 'object') {
+      this._applyTokenCacheHitHeaders(res, lookupResult.headers)
+    }
+
+    logger.info('Served OpenAI-Responses token cache hit', {
+      accountId: tokenCacheContext.accountId,
+      model: tokenCacheContext.requestedModel,
+      promptCacheKey: tokenCacheContext.promptCacheKey || null,
+      provider: provider.getName?.() || 'custom'
+    })
+
+    const statusCode = Number.parseInt(lookupResult.statusCode ?? lookupResult.status, 10) || 200
+    const responseBody =
+      lookupResult.responseBody !== undefined ? lookupResult.responseBody : lookupResult.body
+
+    if (tokenCacheContext?.isStream) {
+      this._writeCachedStreamResponse(res, statusCode, responseBody)
+      return true
+    }
+
+    if (
+      (Buffer.isBuffer(responseBody) || typeof responseBody === 'string') &&
+      typeof res.send === 'function'
+    ) {
+      res.status(statusCode).send(responseBody)
+      return true
+    }
+
+    res.status(statusCode).json(responseBody || {})
+    return true
+  }
+
+  async _storeTokenCacheResponse(tokenCacheContext, responsePayload) {
+    if (!tokenCacheContext || !responsePayload) {
+      return null
+    }
+
+    const statusCode =
+      Number.parseInt(responsePayload.statusCode ?? responsePayload.status, 10) || 0
+    if (statusCode !== 200) {
+      return null
+    }
+
+    const provider = this._getTokenCacheProvider()
+    if (!provider || typeof provider.store !== 'function') {
+      return null
+    }
+
+    try {
+      return await provider.store(tokenCacheContext, responsePayload)
+    } catch (error) {
+      logger.warn('OpenAI-Responses token cache store failed', {
+        accountId: tokenCacheContext.accountId,
+        model: tokenCacheContext.requestedModel,
+        message: error.message,
+        provider: provider.getName?.() || 'custom'
+      })
+      return null
     }
   }
 
@@ -1479,7 +1621,8 @@ class OpenAIResponsesRelayService {
     handleClientDisconnect,
     req,
     requestMetadata = null,
-    responseAdapter = null
+    responseAdapter = null,
+    tokenCacheContext = null
   ) {
     try {
       const aggregatedResult = await this._consumeSuccessfulStreamResponse(
@@ -1506,7 +1649,8 @@ class OpenAIResponsesRelayService {
         requestedModel,
         req._serviceTier || null,
         null,
-        requestMetadata
+        requestMetadata,
+        tokenCacheContext
       )
     } catch (error) {
       logger.error('Failed to aggregate OpenAI-Responses stream response:', {
@@ -1540,6 +1684,7 @@ class OpenAIResponsesRelayService {
     req,
     requestMetadata = null,
     responseAdapter = null,
+    tokenCacheContext = null,
     onStreamFinished = null
   ) {
     res.setHeader('Content-Type', 'text/event-stream')
@@ -1553,7 +1698,6 @@ class OpenAIResponsesRelayService {
     let rateLimitResetsInSeconds = null
     let streamEnded = false
     let streamFinished = false
-    let finalResponseBody = null
     const streamCaptureState = this._createResponsesStreamCaptureState()
     const parser = new IncrementalSSEParser()
 
@@ -1583,7 +1727,6 @@ class OpenAIResponsesRelayService {
       this._captureResponsesStreamEvent(streamCaptureState, eventData)
 
       if (eventData.type === 'response.completed' && eventData.response) {
-        finalResponseBody = eventData.response
         if (eventData.response.model) {
           actualModel = eventData.response.model
           logger.debug(`Captured actual model from response.completed: ${actualModel}`)
@@ -1721,10 +1864,24 @@ class OpenAIResponsesRelayService {
         }
       }
 
+      const cachedPayload =
+        responseAdapter?.getFinalPayload?.() ||
+        this._buildCapturedResponsesPayload(streamCaptureState, null) ||
+        null
+      if (cachedPayload && !rateLimitDetected) {
+        await this._storeTokenCacheResponse(tokenCacheContext, {
+          statusCode: response.status,
+          body: cachedPayload,
+          headers: response.headers,
+          streamed: true
+        })
+      }
+
       if (rateLimitDetected) {
-        const sessionId = req.headers['session_id'] || req.body?.session_id
-        const sessionHash = sessionId
-          ? crypto.createHash('sha256').update(sessionId).digest('hex')
+        const stableSessionKey =
+          tokenCacheContext?.sessionKey || extractStableTokenCacheSessionKey(req, req.body)
+        const sessionHash = stableSessionKey
+          ? crypto.createHash('sha256').update(stableSessionKey).digest('hex')
           : null
 
         await unifiedOpenAIScheduler.markAccountRateLimited(
@@ -1792,7 +1949,8 @@ class OpenAIResponsesRelayService {
     requestedModel,
     serviceTier = null,
     responseAdapter = null,
-    requestMetadata = null
+    requestMetadata = null,
+    tokenCacheContext = null
   ) {
     const responseData = response.data
     const usageData = responseData?.usage || responseData?.response?.usage
@@ -1860,6 +2018,13 @@ class OpenAIResponsesRelayService {
         logger.error('Failed to transform non-stream response:', error)
       }
     }
+
+    await this._storeTokenCacheResponse(tokenCacheContext, {
+      statusCode: response.status,
+      body: clientPayload,
+      headers: response.headers,
+      streamed: false
+    })
 
     logger.info('Normal response completed', {
       accountId: account.id,
@@ -2006,4 +2171,4 @@ class OpenAIResponsesRelayService {
   }
 }
 
-module.exports = new OpenAIResponsesRelayService()
+module.exports = new OpenAIResponsesRelayService(createDefaultTokenCacheProvider())

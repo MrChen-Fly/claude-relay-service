@@ -164,7 +164,7 @@
               今日请求
             </p>
             <p class="text-2xl font-bold text-gray-900 dark:text-gray-100 sm:text-3xl">
-              {{ dashboardData.todayRequests }}
+              {{ formatNumber(dashboardData.todayRequests || 0) }}
             </p>
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
               总请求: {{ formatNumber(dashboardData.totalRequests || 0) }}
@@ -307,14 +307,7 @@
             </p>
             <div class="mb-2 flex flex-wrap items-baseline gap-2">
               <p class="text-xl font-bold text-blue-600 sm:text-2xl md:text-3xl">
-                {{
-                  formatNumber(
-                    (dashboardData.todayInputTokens || 0) +
-                      (dashboardData.todayOutputTokens || 0) +
-                      (dashboardData.todayCacheCreateTokens || 0) +
-                      (dashboardData.todayCacheReadTokens || 0)
-                  )
-                }}
+                {{ formatNumber(dashboardData.todayTokens || 0) }}
               </p>
               <span class="text-sm font-medium text-green-600"
                 >/ {{ costsData.todayCosts.formatted.totalCost }}</span
@@ -334,18 +327,15 @@
                     formatNumber(dashboardData.todayOutputTokens || 0)
                   }}</span></span
                 >
-                <span v-if="(dashboardData.todayCacheCreateTokens || 0) > 0" class="text-purple-600"
-                  >缓存创建:
+                <span
+                  >请求:
                   <span class="font-medium">{{
-                    formatNumber(dashboardData.todayCacheCreateTokens || 0)
+                    formatNumber(dashboardData.todayRequests || 0)
                   }}</span></span
                 >
-                <span v-if="(dashboardData.todayCacheReadTokens || 0) > 0" class="text-purple-600"
-                  >缓存读取:
-                  <span class="font-medium">{{
-                    formatNumber(dashboardData.todayCacheReadTokens || 0)
-                  }}</span></span
-                >
+              </div>
+              <div class="mt-2 text-[11px] text-gray-400 dark:text-gray-500">
+                缓存指标已移到下方缓存面板。
               </div>
             </div>
           </div>
@@ -363,14 +353,7 @@
             </p>
             <div class="mb-2 flex flex-wrap items-baseline gap-2">
               <p class="text-xl font-bold text-emerald-600 sm:text-2xl md:text-3xl">
-                {{
-                  formatNumber(
-                    (dashboardData.totalInputTokens || 0) +
-                      (dashboardData.totalOutputTokens || 0) +
-                      (dashboardData.totalCacheCreateTokens || 0) +
-                      (dashboardData.totalCacheReadTokens || 0)
-                  )
-                }}
+                {{ formatNumber(dashboardData.totalTokens || 0) }}
               </p>
               <span class="text-sm font-medium text-green-600"
                 >/ {{ costsData.totalCosts.formatted.totalCost }}</span
@@ -390,18 +373,15 @@
                     formatNumber(dashboardData.totalOutputTokens || 0)
                   }}</span></span
                 >
-                <span v-if="(dashboardData.totalCacheCreateTokens || 0) > 0" class="text-purple-600"
-                  >缓存创建:
+                <span
+                  >请求:
                   <span class="font-medium">{{
-                    formatNumber(dashboardData.totalCacheCreateTokens || 0)
+                    formatNumber(dashboardData.totalRequests || 0)
                   }}</span></span
                 >
-                <span v-if="(dashboardData.totalCacheReadTokens || 0) > 0" class="text-purple-600"
-                  >缓存读取:
-                  <span class="font-medium">{{
-                    formatNumber(dashboardData.totalCacheReadTokens || 0)
-                  }}</span></span
-                >
+              </div>
+              <div class="mt-2 text-[11px] text-gray-400 dark:text-gray-500">
+                缓存指标已移到下方缓存面板。
               </div>
             </div>
           </div>
@@ -458,7 +438,9 @@
       </div>
     </div>
 
+    <TokenCachePanel />
 
+    <!-- Usage / charts -->
     <!-- 模型消费统计 -->
     <div class="mb-8">
       <div class="mb-4 flex flex-col gap-4 sm:mb-6">
@@ -564,7 +546,9 @@
               class="flex items-center gap-1 rounded-md border border-gray-300 bg-white px-3 py-1 text-sm font-medium text-blue-600 shadow-sm transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:hover:bg-gray-700 sm:gap-2"
               :disabled="isRefreshing"
               title="立即刷新数据"
-              @click="refreshAllData()"
+              @click="
+                refreshAllData({ includeTokenCacheEntries: true, includeTokenCacheStats: true })
+              "
             >
               <i :class="['fas fa-sync-alt text-xs', { 'animate-spin': isRefreshing }]" />
               <span class="hidden sm:inline">{{ isRefreshing ? '刷新中' : '刷新' }}</span>
@@ -781,6 +765,7 @@ import { ref, onMounted, onUnmounted, watch, nextTick, computed } from 'vue'
 import { storeToRefs } from 'pinia'
 import Chart from 'chart.js/auto'
 
+import TokenCachePanel from '@/components/dashboard/TokenCachePanel.vue'
 import { useDashboardStore } from '@/stores/dashboard'
 import { useThemeStore } from '@/stores/theme'
 import { formatNumber, showToast } from '@/utils/tools'
@@ -808,6 +793,8 @@ const {
 const {
   loadDashboardData,
   loadApiKeysTrend,
+  loadTokenCacheEntries,
+  loadTokenCacheStorageStats,
   setDateFilterPreset,
   onCustomDateRangeChange,
   setTrendGranularity,
@@ -924,7 +911,6 @@ const loadBalanceSummary = async () => {
   loadingBalanceSummary.value = false
 }
 
-// 自动刷新相关
 const autoRefreshEnabled = ref(false)
 const autoRefreshInterval = ref(30) // 秒
 const autoRefreshTimer = ref(null)
@@ -1043,8 +1029,6 @@ function createUsageTrendChart() {
   // 准备多维度数据
   const inputData = data.map((d) => d.inputTokens || 0)
   const outputData = data.map((d) => d.outputTokens || 0)
-  const cacheCreateData = data.map((d) => d.cacheCreateTokens || 0)
-  const cacheReadData = data.map((d) => d.cacheReadTokens || 0)
   const requestsData = data.map((d) => d.requests || 0)
   const costData = data.map((d) => d.cost || 0)
 
@@ -1090,20 +1074,6 @@ function createUsageTrendChart() {
         data: outputData,
         borderColor: themeStore.currentColorScheme.accent,
         backgroundColor: `${themeStore.currentColorScheme.accent}1a`,
-        tension: 0.3
-      },
-      {
-        label: '缓存创建Token',
-        data: cacheCreateData,
-        borderColor: 'rgb(59, 130, 246)',
-        backgroundColor: 'rgba(59, 130, 246, 0.1)',
-        tension: 0.3
-      },
-      {
-        label: '缓存读取Token',
-        data: cacheReadData,
-        borderColor: themeStore.currentColorScheme.secondary,
-        backgroundColor: `${themeStore.currentColorScheme.secondary}1a`,
         tension: 0.3
       },
       {
@@ -1665,12 +1635,21 @@ watch(accountUsageTrendData, () => {
 })
 
 // 刷新所有数据
-async function refreshAllData() {
+async function refreshAllData(options = {}) {
+  const { includeTokenCacheEntries = false, includeTokenCacheStats = true } = options
   if (isRefreshing.value) return
 
   isRefreshing.value = true
   try {
-    await Promise.all([loadDashboardData(), refreshChartsData(), loadBalanceSummary()])
+    const tasks = [loadDashboardData(), refreshChartsData(), loadBalanceSummary()]
+    if (includeTokenCacheEntries) {
+      tasks.push(loadTokenCacheEntries({ reset: true }))
+    }
+    if (includeTokenCacheStats) {
+      tasks.push(loadTokenCacheStorageStats())
+    }
+
+    await Promise.all(tasks)
   } finally {
     isRefreshing.value = false
   }
@@ -1767,7 +1746,7 @@ watch(
 // 初始化
 onMounted(async () => {
   // 加载所有数据
-  await refreshAllData()
+  await refreshAllData({ includeTokenCacheEntries: true, includeTokenCacheStats: true })
 
   // 创建图表
   await nextTick()
