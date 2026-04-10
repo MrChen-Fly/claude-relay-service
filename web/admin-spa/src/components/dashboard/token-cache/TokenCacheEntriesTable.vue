@@ -168,7 +168,7 @@ const {
 } = dashboardStore
 
 const entriesRefreshing = ref(false)
-const containerClass = computed(() => (props.embedded ? 'pt-4' : 'card mt-6 p-4 sm:p-6'))
+const containerClass = computed(() => (props.embedded ? '' : 'card mt-6 p-4 sm:p-6'))
 
 const handleRefreshEntries = async () => {
   if (entriesRefreshing.value) {
