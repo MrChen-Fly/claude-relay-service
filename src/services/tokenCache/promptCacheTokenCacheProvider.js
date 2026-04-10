@@ -268,6 +268,17 @@ class PromptCacheTokenCacheProvider extends TokenCacheProvider {
             return this._buildHitResult(semanticEntry, hitLayer, semanticHit.score)
           }
         }
+
+        if (semanticHit?.rejectedReason) {
+          this._recordDiagnosticEvent(
+            this._buildDiagnosticEvent(context, evaluation, {
+              eventType: 'semantic_reject',
+              layer: semanticHit.layer || 'semantic',
+              reason: semanticHit.rejectedReason,
+              score: semanticHit.score
+            })
+          )
+        }
       } catch (error) {
         if (isSemanticInputTooLargeError(error)) {
           logger.info('Prompt-cache semantic lookup skipped for oversized input', {

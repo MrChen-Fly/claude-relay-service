@@ -156,8 +156,54 @@ describe('semanticTokenCacheEngine', () => {
         scopeKey: 'scope',
         promptText: longPromptA
       })
-    ).resolves.toBeNull()
+    ).resolves.toEqual(
+      expect.objectContaining({
+        rejectedReason: 'long_prompt_verifier_reject',
+        candidateCacheKey: 'key-1',
+        layer: 'semantic_verified'
+      })
+    )
 
     expect(provider.checkSimilarity).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects long-prompt candidates locally when structured anchors diverge', async () => {
+    const longPromptA = Array.from(
+      { length: 900 },
+      (_, index) => `Segment ${index} for semantic-run-a-123456789 validates long prompt reuse.`
+    ).join(' ')
+    const longPromptB = Array.from(
+      { length: 900 },
+      (_, index) => `Segment ${index} for semantic-run-b-987654321 validates long prompt reuse.`
+    ).join(' ')
+    const storage = {
+      getAllEmbeddings: jest.fn(async () => new Map([['embedding:scope:key-1', [1, 0]]])),
+      getPrompt: jest.fn(async () => longPromptB)
+    }
+    const provider = {
+      isEnabled: jest.fn(() => true),
+      embed: jest.fn(async () => [1, 0]),
+      checkSimilarity: jest.fn(async () => true)
+    }
+    const engine = new SemanticTokenCacheEngine(storage, provider, {
+      useANNIndex: false,
+      highThreshold: 0.7,
+      lowThreshold: 0.3
+    })
+
+    await expect(
+      engine.findSimilar({
+        scopeKey: 'scope',
+        promptText: longPromptA
+      })
+    ).resolves.toEqual(
+      expect.objectContaining({
+        rejectedReason: 'long_prompt_local_gate_structured_tokens',
+        candidateCacheKey: 'key-1',
+        layer: 'semantic'
+      })
+    )
+
+    expect(provider.checkSimilarity).not.toHaveBeenCalled()
   })
 })

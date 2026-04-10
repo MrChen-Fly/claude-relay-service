@@ -3,6 +3,7 @@ const EmbeddingAnnIndex = require('./embeddingAnnIndex')
 const {
   DEFAULT_LONG_PROMPT_THRESHOLD_CHARS,
   buildSemanticVerificationText,
+  evaluateLongPromptCompatibility,
   isLongVerificationText,
   normalizeVerificationText
 } = require('./semanticVerificationText')
@@ -163,6 +164,21 @@ class SemanticTokenCacheEngine {
     return normalizeVerificationText(promptText) === normalizeVerificationText(originalPrompt)
   }
 
+  _buildRejectedResult(reason, score, cacheKey, layer = 'semantic') {
+    return {
+      rejectedReason: reason,
+      score,
+      candidateCacheKey: cacheKey,
+      layer
+    }
+  }
+
+  _evaluateLongPromptCandidate(promptText, originalPrompt) {
+    return evaluateLongPromptCompatibility(promptText, originalPrompt, {
+      longPromptThresholdChars: this.longPromptThresholdChars
+    })
+  }
+
   async _verifyPromptSimilarity(promptText, originalPrompt) {
     if (!promptText || !originalPrompt || typeof this.provider?.checkSimilarity !== 'function') {
       return false
@@ -228,13 +244,28 @@ class SemanticTokenCacheEngine {
             }
       }
 
-      if (
-        this._isLongPromptVerificationRequired(promptText, originalPrompt) &&
-        !this._isEquivalentPromptText(promptText, originalPrompt)
-      ) {
+      const requiresLongVerification = this._isLongPromptVerificationRequired(
+        promptText,
+        originalPrompt
+      )
+      if (requiresLongVerification && !this._isEquivalentPromptText(promptText, originalPrompt)) {
+        const longPromptGate = this._evaluateLongPromptCandidate(promptText, originalPrompt)
+        if (!longPromptGate.accepted) {
+          return this._buildRejectedResult(
+            `long_prompt_local_gate_${longPromptGate.reason}`,
+            bestSimilarity,
+            cacheKey
+          )
+        }
+
         const verified = await this._verifyPromptSimilarity(promptText, originalPrompt)
         if (!verified) {
-          return null
+          return this._buildRejectedResult(
+            'long_prompt_verifier_reject',
+            bestSimilarity,
+            cacheKey,
+            'semantic_verified'
+          )
         }
 
         return {
@@ -267,9 +298,29 @@ class SemanticTokenCacheEngine {
       return null
     }
 
+    const requiresLongVerification = this._isLongPromptVerificationRequired(
+      promptText,
+      originalPrompt
+    )
+    if (requiresLongVerification) {
+      const longPromptGate = this._evaluateLongPromptCandidate(promptText, originalPrompt)
+      if (!longPromptGate.accepted) {
+        return this._buildRejectedResult(
+          `long_prompt_local_gate_${longPromptGate.reason}`,
+          bestSimilarity,
+          cacheKey
+        )
+      }
+    }
+
     const verified = await this._verifyPromptSimilarity(promptText, originalPrompt)
     if (!verified) {
-      return null
+      return this._buildRejectedResult(
+        requiresLongVerification ? 'long_prompt_verifier_reject' : 'semantic_verifier_reject',
+        bestSimilarity,
+        cacheKey,
+        'semantic_verified'
+      )
     }
 
     return {

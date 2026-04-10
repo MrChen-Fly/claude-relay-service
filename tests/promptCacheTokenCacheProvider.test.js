@@ -345,6 +345,65 @@ describe('prompt-cache token cache provider', () => {
     )
   })
 
+  it('records semantic_reject diagnostics when a long-prompt semantic candidate is rejected', async () => {
+    const storage = new MemoryTokenCacheStorage()
+    const diagnostics = {
+      recordAsync: jest.fn()
+    }
+    const semanticEngine = {
+      isEnabled: jest.fn(() => true),
+      findSimilar: jest.fn(async () => ({
+        rejectedReason: 'long_prompt_local_gate_structured_tokens',
+        score: 0.94,
+        candidateCacheKey: 'semantic-key',
+        layer: 'semantic'
+      })),
+      store: jest.fn()
+    }
+    const provider = new PromptCacheTokenCacheProvider({
+      storage,
+      diagnostics,
+      metrics: {
+        recordAsync: jest.fn()
+      },
+      semanticEngine
+    })
+    const longPrompt = Array.from(
+      { length: 900 },
+      (_, index) =>
+        `Segment ${index} for semantic-run-a-123456789 validates long prompt reuse safely.`
+    ).join(' ')
+
+    await expect(
+      provider.lookup({
+        endpointPath: '/v1/responses',
+        requestBody: {
+          model: 'gpt-5',
+          input: longPrompt,
+          stream: false
+        }
+      })
+    ).resolves.toEqual({
+      hit: false,
+      reason: 'cache_miss'
+    })
+
+    expect(diagnostics.recordAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'semantic_reject',
+        layer: 'semantic',
+        reason: 'long_prompt_local_gate_structured_tokens',
+        score: 0.94
+      })
+    )
+    expect(diagnostics.recordAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'miss',
+        reason: 'cache_miss'
+      })
+    )
+  })
+
   it('prefers semantic lookup before the scoped exact cache when semantic cache is enabled', async () => {
     const storage = new MemoryTokenCacheStorage()
     const metrics = {
