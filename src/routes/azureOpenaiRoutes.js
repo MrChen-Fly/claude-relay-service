@@ -7,6 +7,7 @@ const azureOpenaiRelayService = require('../services/relay/azureOpenaiRelayServi
 const apiKeyService = require('../services/apiKeyService')
 const crypto = require('crypto')
 const upstreamErrorHelper = require('../utils/upstreamErrorHelper')
+const { createRequestDetailMeta } = require('../utils/requestDetailHelper')
 
 // 支持的模型列表 - 基于真实的 Azure OpenAI 模型
 const ALLOWED_MODELS = {
@@ -36,7 +37,7 @@ class AtomicUsageReporter {
     this.pendingReports = new Map()
   }
 
-  async reportOnce(requestId, usageData, apiKeyId, modelToRecord, accountId) {
+  async reportOnce(requestId, usageData, apiKeyId, modelToRecord, accountId, requestMeta = null) {
     if (this.reportedUsage.has(requestId)) {
       logger.debug(`Usage already reported for request: ${requestId}`)
       return false
@@ -52,7 +53,8 @@ class AtomicUsageReporter {
       usageData,
       apiKeyId,
       modelToRecord,
-      accountId
+      accountId,
+      requestMeta
     )
     this.pendingReports.set(requestId, reportPromise)
 
@@ -73,7 +75,14 @@ class AtomicUsageReporter {
     }
   }
 
-  async _performReport(requestId, usageData, apiKeyId, modelToRecord, accountId) {
+  async _performReport(
+    requestId,
+    usageData,
+    apiKeyId,
+    modelToRecord,
+    accountId,
+    requestMeta = null
+  ) {
     try {
       const inputTokens = usageData.prompt_tokens || usageData.input_tokens || 0
       const outputTokens = usageData.completion_tokens || usageData.output_tokens || 0
@@ -94,7 +103,9 @@ class AtomicUsageReporter {
         cacheReadTokens,
         modelToRecord,
         accountId,
-        'azure-openai'
+        'azure-openai',
+        null,
+        requestMeta
       )
 
       // 同步更新 Azure 账户的 lastUsedAt 和累计使用量
@@ -228,7 +239,12 @@ router.post('/chat/completions', authenticateApiKey, async (req, res) => {
               usageData,
               req.apiKey.id,
               modelToRecord,
-              account.id
+              account.id,
+              createRequestDetailMeta(req, {
+                requestBody: req.body,
+                stream: true,
+                statusCode: res.statusCode
+              })
             )
           }
         },
@@ -238,8 +254,10 @@ router.post('/chat/completions', authenticateApiKey, async (req, res) => {
       })
     } else {
       // 处理非流式响应
-      const { usageData, actualModel, responseData } =
-        azureOpenaiRelayService.handleNonStreamResponse(response, res)
+      const { usageData, actualModel } = azureOpenaiRelayService.handleNonStreamResponse(
+        response,
+        res
+      )
       if (usageData) {
         const modelToRecord = actualModel || req.body.model || 'unknown'
         await usageReporter.reportOnce(
@@ -247,7 +265,12 @@ router.post('/chat/completions', authenticateApiKey, async (req, res) => {
           usageData,
           req.apiKey.id,
           modelToRecord,
-          account.id
+          account.id,
+          createRequestDetailMeta(req, {
+            requestBody: req.body,
+            stream: false,
+            statusCode: response.status
+          })
         )
       }
     }
@@ -346,7 +369,12 @@ router.post('/responses', authenticateApiKey, async (req, res) => {
               usageData,
               req.apiKey.id,
               modelToRecord,
-              account.id
+              account.id,
+              createRequestDetailMeta(req, {
+                requestBody: req.body,
+                stream: true,
+                statusCode: res.statusCode
+              })
             )
           }
         },
@@ -356,8 +384,10 @@ router.post('/responses', authenticateApiKey, async (req, res) => {
       })
     } else {
       // 处理非流式响应
-      const { usageData, actualModel, responseData } =
-        azureOpenaiRelayService.handleNonStreamResponse(response, res)
+      const { usageData, actualModel } = azureOpenaiRelayService.handleNonStreamResponse(
+        response,
+        res
+      )
       if (usageData) {
         const modelToRecord = actualModel || req.body.model || 'unknown'
         await usageReporter.reportOnce(
@@ -365,7 +395,12 @@ router.post('/responses', authenticateApiKey, async (req, res) => {
           usageData,
           req.apiKey.id,
           modelToRecord,
-          account.id
+          account.id,
+          createRequestDetailMeta(req, {
+            requestBody: req.body,
+            stream: false,
+            statusCode: response.status
+          })
         )
       }
     }
@@ -453,11 +488,24 @@ router.post('/embeddings', authenticateApiKey, async (req, res) => {
     }
 
     // 处理响应
-    const { usageData, actualModel, responseData } =
-      azureOpenaiRelayService.handleNonStreamResponse(response, res)
+    const { usageData, actualModel } = azureOpenaiRelayService.handleNonStreamResponse(
+      response,
+      res
+    )
     if (usageData) {
       const modelToRecord = actualModel || req.body.model || 'unknown'
-      await usageReporter.reportOnce(requestId, usageData, req.apiKey.id, modelToRecord, account.id)
+      await usageReporter.reportOnce(
+        requestId,
+        usageData,
+        req.apiKey.id,
+        modelToRecord,
+        account.id,
+        createRequestDetailMeta(req, {
+          requestBody: req.body,
+          stream: false,
+          statusCode: response.status
+        })
+      )
     }
   } catch (error) {
     logger.error(`Azure OpenAI embeddings request failed ${requestId}:`, error)

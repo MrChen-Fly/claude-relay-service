@@ -26,6 +26,10 @@ const {
   extractStableTokenCacheSessionKey
 } = require('../tokenCache/tokenCacheProvider')
 const createDefaultTokenCacheProvider = require('../tokenCache/createDefaultTokenCacheProvider')
+const {
+  createRequestDetailMeta,
+  extractOpenAICacheReadTokens
+} = require('../../utils/requestDetailHelper')
 
 // lastUsedAt 更新节流（每账户 60 秒内最多更新一次，使用 LRU 防止内存泄漏）
 const lastUsedAtThrottle = new LRUCache(1000) // 最多缓存 1000 个账户
@@ -590,7 +594,8 @@ class OpenAIResponsesRelayService {
         req._serviceTier || null,
         responseAdapter,
         requestMetadata,
-        tokenCacheContext
+        tokenCacheContext,
+        req
       )
     } catch (error) {
       if (abortController && !abortController.signal.aborted) {
@@ -1650,7 +1655,8 @@ class OpenAIResponsesRelayService {
         req._serviceTier || null,
         null,
         requestMetadata,
-        tokenCacheContext
+        tokenCacheContext,
+        req
       )
     } catch (error) {
       logger.error('Failed to aggregate OpenAI-Responses stream response:', {
@@ -1813,7 +1819,7 @@ class OpenAIResponsesRelayService {
         try {
           const totalInputTokens = usageData.input_tokens || usageData.prompt_tokens || 0
           const outputTokens = usageData.output_tokens || usageData.completion_tokens || 0
-          const cacheReadTokens = usageData.input_tokens_details?.cached_tokens || 0
+          const cacheReadTokens = extractOpenAICacheReadTokens(usageData)
           const cacheCreateTokens = extractCacheCreationTokens(usageData)
           const actualInputTokens = Math.max(0, totalInputTokens - cacheReadTokens)
 
@@ -1822,7 +1828,16 @@ class OpenAIResponsesRelayService {
           const modelToRecord = actualModel || requestedModel || 'gpt-4'
 
           const serviceTier = req._serviceTier || null
-          const usageArgs = [
+          const requestMeta = {
+            ...(requestMetadata || {}),
+            ...createRequestDetailMeta(req, {
+              requestBody: req.body,
+              stream: true,
+              statusCode: res.statusCode
+            })
+          }
+
+          await apiKeyService.recordUsage(
             apiKeyData.id,
             actualInputTokens,
             outputTokens,
@@ -1831,13 +1846,9 @@ class OpenAIResponsesRelayService {
             modelToRecord,
             account.id,
             'openai-responses',
-            serviceTier
-          ]
-          if (requestMetadata?.promptCacheKey) {
-            usageArgs.push(requestMetadata)
-          }
-
-          await apiKeyService.recordUsage(...usageArgs)
+            serviceTier,
+            requestMeta
+          )
 
           logger.info(
             `Recorded usage - Input: ${totalInputTokens}(actual:${actualInputTokens}+cached:${cacheReadTokens}), CacheCreate: ${cacheCreateTokens}, Output: ${outputTokens}, Total: ${totalTokens}, Model: ${modelToRecord}`
@@ -1950,7 +1961,8 @@ class OpenAIResponsesRelayService {
     serviceTier = null,
     responseAdapter = null,
     requestMetadata = null,
-    tokenCacheContext = null
+    tokenCacheContext = null,
+    req = null
   ) {
     const responseData = response.data
     const usageData = responseData?.usage || responseData?.response?.usage
@@ -1961,14 +1973,23 @@ class OpenAIResponsesRelayService {
       try {
         const totalInputTokens = usageData.input_tokens || usageData.prompt_tokens || 0
         const outputTokens = usageData.output_tokens || usageData.completion_tokens || 0
-        const cacheReadTokens = usageData.input_tokens_details?.cached_tokens || 0
+        const cacheReadTokens = extractOpenAICacheReadTokens(usageData)
         const cacheCreateTokens = extractCacheCreationTokens(usageData)
         const actualInputTokens = Math.max(0, totalInputTokens - cacheReadTokens)
 
         const totalTokens =
           usageData.total_tokens || totalInputTokens + outputTokens + cacheCreateTokens
 
-        const usageArgs = [
+        const requestMeta = {
+          ...(requestMetadata || {}),
+          ...createRequestDetailMeta(req, {
+            requestBody: req?.body,
+            stream: false,
+            statusCode: response.status
+          })
+        }
+
+        await apiKeyService.recordUsage(
           apiKeyData.id,
           actualInputTokens,
           outputTokens,
@@ -1977,13 +1998,9 @@ class OpenAIResponsesRelayService {
           actualModel,
           account.id,
           'openai-responses',
-          serviceTier
-        ]
-        if (requestMetadata?.promptCacheKey) {
-          usageArgs.push(requestMetadata)
-        }
-
-        await apiKeyService.recordUsage(...usageArgs)
+          serviceTier,
+          requestMeta
+        )
 
         logger.info(
           `Recorded non-stream usage - Input: ${totalInputTokens}(actual:${actualInputTokens}+cached:${cacheReadTokens}), CacheCreate: ${cacheCreateTokens}, Output: ${outputTokens}, Total: ${totalTokens}, Model: ${actualModel}`
