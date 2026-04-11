@@ -30,6 +30,11 @@ const createEmptyTokenCacheSummary = () => ({
   grayZoneChecks: 0,
   providerCalls: 0,
   providerErrors: 0,
+  providerPromptCacheRequests: 0,
+  providerPromptCacheReadRequests: 0,
+  providerPromptCacheWriteRequests: 0,
+  providerPromptCacheReadTokens: 0,
+  providerPromptCacheWriteTokens: 0,
   hitRate: 0,
   missRate: 0,
   eligibleRate: 0,
@@ -40,6 +45,7 @@ const createEmptyTokenCacheSummary = () => ({
   semanticHitShare: 0,
   semanticSkipShare: 0,
   semanticVerifiedShare: 0,
+  providerPromptCacheRequestRate: 0,
   providerErrorRate: 0
 })
 

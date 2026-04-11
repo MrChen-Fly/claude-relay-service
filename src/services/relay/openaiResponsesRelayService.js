@@ -27,6 +27,8 @@ const {
   extractStableTokenCacheSessionKey
 } = require('../tokenCache/tokenCacheProvider')
 const createDefaultTokenCacheProvider = require('../tokenCache/createDefaultTokenCacheProvider')
+const tokenCacheMetricsService = require('../tokenCache/tokenCacheMetricsService')
+const { buildProviderPromptCacheMetrics } = require('../tokenCache/providerPromptCacheMetrics')
 const {
   createRequestDetailMeta,
   extractOpenAICacheReadTokens
@@ -1725,6 +1727,9 @@ class OpenAIResponsesRelayService {
           logger.info(
             `Recorded usage - Input: ${totalInputTokens}(actual:${actualInputTokens}+cached:${cacheReadTokens}), CacheCreate: ${cacheCreateTokens}, Output: ${outputTokens}, Total: ${totalTokens}, Model: ${modelToRecord}`
           )
+          tokenCacheMetricsService.recordAsync(
+            buildProviderPromptCacheMetrics({ cacheReadTokens, cacheCreateTokens })
+          )
 
           await openaiResponsesAccountService.updateAccountUsage(account.id, totalTokens)
 
@@ -1876,6 +1881,9 @@ class OpenAIResponsesRelayService {
 
         logger.info(
           `Recorded non-stream usage - Input: ${totalInputTokens}(actual:${actualInputTokens}+cached:${cacheReadTokens}), CacheCreate: ${cacheCreateTokens}, Output: ${outputTokens}, Total: ${totalTokens}, Model: ${actualModel}`
+        )
+        tokenCacheMetricsService.recordAsync(
+          buildProviderPromptCacheMetrics({ cacheReadTokens, cacheCreateTokens })
         )
 
         await openaiResponsesAccountService.updateAccountUsage(account.id, totalTokens)

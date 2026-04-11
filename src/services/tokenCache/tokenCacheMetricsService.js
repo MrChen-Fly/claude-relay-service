@@ -24,7 +24,12 @@ const COUNTER_FIELDS = [
   'semanticVerifiedHits',
   'grayZoneChecks',
   'providerCalls',
-  'providerErrors'
+  'providerErrors',
+  'providerPromptCacheRequests',
+  'providerPromptCacheReadRequests',
+  'providerPromptCacheWriteRequests',
+  'providerPromptCacheReadTokens',
+  'providerPromptCacheWriteTokens'
 ]
 
 function toSafeInteger(value) {
@@ -94,6 +99,11 @@ function buildSummary(counterSet = {}) {
     grayZoneChecks: counters.grayZoneChecks,
     providerCalls: counters.providerCalls,
     providerErrors: counters.providerErrors,
+    providerPromptCacheRequests: counters.providerPromptCacheRequests,
+    providerPromptCacheReadRequests: counters.providerPromptCacheReadRequests,
+    providerPromptCacheWriteRequests: counters.providerPromptCacheWriteRequests,
+    providerPromptCacheReadTokens: counters.providerPromptCacheReadTokens,
+    providerPromptCacheWriteTokens: counters.providerPromptCacheWriteTokens,
     hitRate: toRatio(counters.hits, counters.eligibleRequests),
     missRate: toRatio(counters.misses, counters.eligibleRequests),
     eligibleRate: toRatio(counters.eligibleRequests, counters.requests),
@@ -104,6 +114,10 @@ function buildSummary(counterSet = {}) {
     semanticHitShare: toRatio(counters.semanticHits, counters.hits),
     semanticSkipShare: toRatio(counters.semanticSkips, counters.eligibleRequests),
     semanticVerifiedShare: toRatio(counters.semanticVerifiedHits, counters.semanticHits),
+    providerPromptCacheRequestRate: toRatio(
+      counters.providerPromptCacheRequests,
+      counters.requests
+    ),
     providerErrorRate: toRatio(counters.providerErrors, counters.providerCalls)
   }
 }

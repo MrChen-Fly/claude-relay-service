@@ -10,7 +10,7 @@
               Token Cache
             </h3>
             <p class="text-sm text-gray-500 dark:text-gray-400">
-              只看最近命中率、复用次数和没复用的主因。
+              只看最近本地命中率、上游 Prompt Cache 回报和没复用的主因。
             </p>
           </div>
         </div>
@@ -47,7 +47,7 @@
           <div>
             <p class="text-sm font-semibold text-gray-900 dark:text-gray-100">高级诊断</p>
             <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
-              只有在排查问题时再展开，查看命中来源、主要未复用原因和缓存条目。
+              只有在排查问题时再展开，查看本地命中来源、上游 Prompt Cache 和主要未复用原因。
             </p>
           </div>
 

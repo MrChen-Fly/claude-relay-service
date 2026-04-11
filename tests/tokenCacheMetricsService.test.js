@@ -23,7 +23,9 @@ describe('tokenCacheMetricsService', () => {
     await service.record({
       requests: 1,
       bypasses: 1,
-      'bypassReason:dynamic_tools': 1
+      'bypassReason:dynamic_tools': 1,
+      providerPromptCacheReadTokens: 120,
+      providerPromptCacheRequests: 1
     })
 
     expect(pipeline.hincrby).toHaveBeenCalledWith('token_cache:test:metrics:total', 'requests', 1)
@@ -32,6 +34,11 @@ describe('tokenCacheMetricsService', () => {
       'token_cache:test:metrics:total',
       'bypassReason:dynamic_tools',
       1
+    )
+    expect(pipeline.hincrby).toHaveBeenCalledWith(
+      'token_cache:test:metrics:total',
+      'providerPromptCacheReadTokens',
+      120
     )
     expect(pipeline.expire).toHaveBeenCalled()
     expect(pipeline.exec).toHaveBeenCalled()
@@ -57,6 +64,11 @@ describe('tokenCacheMetricsService', () => {
             semanticSkips: '1',
             providerCalls: '2',
             providerErrors: '1',
+            providerPromptCacheRequests: '1',
+            providerPromptCacheReadRequests: '1',
+            providerPromptCacheWriteRequests: '1',
+            providerPromptCacheReadTokens: '121344',
+            providerPromptCacheWriteTokens: '2048',
             'bypassReason:dynamic_tools': '1',
             'semanticSkipReason:input_too_large_provider': '1'
           }
@@ -92,6 +104,11 @@ describe('tokenCacheMetricsService', () => {
             semanticVerifiedHits: '1',
             providerCalls: '6',
             providerErrors: '1',
+            providerPromptCacheRequests: '3',
+            providerPromptCacheReadRequests: '2',
+            providerPromptCacheWriteRequests: '2',
+            providerPromptCacheReadTokens: '240000',
+            providerPromptCacheWriteTokens: '4096',
             'bypassReason:dynamic_tools': '2',
             'semanticSkipReason:input_too_large_provider': '1'
           }),
@@ -147,8 +164,14 @@ describe('tokenCacheMetricsService', () => {
         semanticChunkedRequests: 1,
         semanticChunkedChunks: 3,
         semanticSkips: 1,
+        providerPromptCacheRequests: 1,
+        providerPromptCacheReadRequests: 1,
+        providerPromptCacheWriteRequests: 1,
+        providerPromptCacheReadTokens: 121344,
+        providerPromptCacheWriteTokens: 2048,
         hitRate: 0.5,
         eligibleRate: 0.8,
+        providerPromptCacheRequestRate: 0.2,
         providerErrorRate: 0.5
       })
     )
@@ -161,7 +184,12 @@ describe('tokenCacheMetricsService', () => {
         semanticChunkedRequests: 2,
         semanticChunkedChunks: 5,
         semanticSkips: 1,
-        semanticVerifiedHits: 1
+        semanticVerifiedHits: 1,
+        providerPromptCacheRequests: 3,
+        providerPromptCacheReadRequests: 2,
+        providerPromptCacheWriteRequests: 2,
+        providerPromptCacheReadTokens: 240000,
+        providerPromptCacheWriteTokens: 4096
       })
     )
     expect(snapshot.bypassReasons.recent).toEqual([

@@ -7,19 +7,21 @@
         <div>
           <h4 class="text-base font-semibold text-gray-900 dark:text-gray-100">命中来源</h4>
           <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
-            只保留最近窗口里最常用的复用来源。
+            本地 relay 回放和上游 Prompt Cache 分开统计，只保留最近窗口最常见的来源。
           </p>
         </div>
         <div class="text-right">
-          <p class="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500">总命中</p>
+          <p class="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500">
+            复用信号
+          </p>
           <p class="mt-1 text-2xl font-bold tracking-tight text-gray-900 dark:text-gray-100">
-            {{ formatNumber(tokenCacheRecent.hits) }}
+            {{ formatNumber(reuseSignalTotal) }}
           </p>
         </div>
       </div>
 
       <div
-        v-if="Number(tokenCacheRecent.hits) <= 0"
+        v-if="reuseSignalTotal <= 0"
         class="mt-4 rounded-2xl bg-gray-50 px-4 py-6 text-sm text-gray-500 dark:bg-gray-800/60 dark:text-gray-400"
       >
         当前窗口还没有命中请求。
@@ -138,7 +140,10 @@ const emptyTokenCacheSummary = Object.freeze({
   exactHits: 0,
   toolResultHits: 0,
   semanticHits: 0,
-  semanticSkips: 0
+  providerPromptCacheReadRequests: 0,
+  semanticSkips: 0,
+  providerPromptCacheReadTokens: 0,
+  providerPromptCacheWriteTokens: 0
 })
 
 const tokenCacheRecent = computed(() => tokenCacheMetrics.value?.recent || emptyTokenCacheSummary)
@@ -158,9 +163,14 @@ const toPercentLabel = (numerator, denominator) => {
   return `${((toNumber(numerator) / safeDenominator) * 100).toFixed(1)}%`
 }
 
+const reuseSignalTotal = computed(
+  () =>
+    toNumber(tokenCacheRecent.value.hits) +
+    toNumber(tokenCacheRecent.value.providerPromptCacheReadRequests)
+)
+
 const hitSourceItems = computed(() => {
   const recent = tokenCacheRecent.value
-  const totalHits = toNumber(recent.hits)
 
   return [
     {
@@ -180,10 +190,16 @@ const hitSourceItems = computed(() => {
       label: '语义复用',
       note: '相似文本命中缓存',
       count: toNumber(recent.semanticHits)
+    },
+    {
+      key: 'provider-prompt-cache',
+      label: '上游 Prompt Cache',
+      note: `读 ${formatNumber(recent.providerPromptCacheReadTokens)} token · 建 ${formatNumber(recent.providerPromptCacheWriteTokens)} token`,
+      count: toNumber(recent.providerPromptCacheReadRequests)
     }
   ].map((item) => ({
     ...item,
-    share: toPercentLabel(item.count, totalHits)
+    share: toPercentLabel(item.count, reuseSignalTotal.value)
   }))
 })
 

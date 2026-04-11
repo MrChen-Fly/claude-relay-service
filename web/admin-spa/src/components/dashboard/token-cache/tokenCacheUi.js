@@ -2,9 +2,12 @@ import { formatNumber } from '@/utils/tools'
 
 const BYPASS_REASON_LABELS = {
   dynamic_tools: '包含工具调用，跳过语义复用',
+  stateful_unanchored: '只有 session / conversation，缺少可重放锚点',
+  stateful_conversation: '旧策略将整段会话直接绕过',
   structured_output: '启用了结构化输出',
   non_deterministic_temperature: '温度参数非 0，结果不稳定',
   empty_prompt: '提示词为空',
+  non_terminal_response: '响应仍需继续执行工具或审批',
   unknown: '未知原因'
 }
 

@@ -133,6 +133,29 @@ function buildSuccessResponse({ id, outputText, usage }) {
   }
 }
 
+function buildToolCallResponse({ id, callId, toolName, argumentsJson, usage }) {
+  return {
+    status: 200,
+    headers: {},
+    data: {
+      id,
+      object: 'response',
+      status: 'completed',
+      model: 'gpt-5',
+      output: [
+        {
+          id: `${id}_fc`,
+          type: 'function_call',
+          call_id: callId,
+          name: toolName,
+          arguments: argumentsJson
+        }
+      ],
+      usage
+    }
+  }
+}
+
 describe('openaiResponsesRelayService codex request simulation', () => {
   beforeEach(() => {
     jest.clearAllMocks()
@@ -230,7 +253,7 @@ describe('openaiResponsesRelayService codex request simulation', () => {
     )
   })
 
-  it('bypasses token cache for stateful codex tool conversations', async () => {
+  it('exact-caches terminal post-tool codex conversations once the request is replay-safe', async () => {
     const storage = new MemoryTokenCacheStorage()
     const metrics = {
       recordAsync: jest.fn()
@@ -295,7 +318,7 @@ describe('openaiResponsesRelayService codex request simulation', () => {
       { id: 'key-1' }
     )
 
-    expect(storage.data.size).toBe(0)
+    expect(storage.data.size).toBeGreaterThan(0)
 
     const secondRes = buildRes()
     await openaiResponsesRelayService.handleRequest(
@@ -305,18 +328,18 @@ describe('openaiResponsesRelayService codex request simulation', () => {
       { id: 'key-1' }
     )
 
-    expect(axios).toHaveBeenCalledTimes(2)
-    expect(secondRes.setHeader).not.toHaveBeenCalledWith('x-token-cache', 'HIT')
+    expect(axios).toHaveBeenCalledTimes(1)
+    expect(secondRes.setHeader).toHaveBeenCalledWith('x-token-cache', 'HIT')
+    expect(secondRes.setHeader).toHaveBeenCalledWith('x-token-cache-layer', 'exact')
     expect(metrics.recordAsync).toHaveBeenCalledWith(
       expect.objectContaining({
-        requests: 1,
-        bypasses: 1,
-        'bypassReason:stateful_conversation': 1
+        hits: 1,
+        exactHits: 1
       })
     )
   })
 
-  it('bypasses token cache for codex responses traffic keyed by session headers', async () => {
+  it('bypasses token cache for opaque codex responses traffic keyed only by session headers', async () => {
     const storage = new MemoryTokenCacheStorage()
     const metrics = {
       recordAsync: jest.fn()
@@ -383,7 +406,147 @@ describe('openaiResponsesRelayService codex request simulation', () => {
       expect.objectContaining({
         requests: 1,
         bypasses: 1,
-        'bypassReason:stateful_conversation': 1
+        'bypassReason:stateful_unanchored': 1
+      })
+    )
+  })
+
+  it('exact-caches codex responses traffic when previous_response_id provides a turn anchor', async () => {
+    const storage = new MemoryTokenCacheStorage()
+    const metrics = {
+      recordAsync: jest.fn()
+    }
+    const provider = new PromptCacheTokenCacheProvider({
+      storage,
+      metrics,
+      config: {
+        ttlSeconds: 3600,
+        maxEntries: 100
+      }
+    })
+    openaiResponsesRelayService.setTokenCacheProvider(provider)
+
+    const requestBody = {
+      model: 'gpt-5',
+      previous_response_id: 'resp_prev_1',
+      input: [
+        {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'Reply with ANCHORED_CACHE_OK.' }]
+        }
+      ],
+      stream: false
+    }
+
+    axios.mockResolvedValueOnce(
+      buildSuccessResponse({
+        id: 'resp_anchored_1',
+        outputText: 'ANCHORED_CACHE_OK',
+        usage: {
+          input_tokens: 64,
+          output_tokens: 4,
+          total_tokens: 68
+        }
+      })
+    )
+
+    await openaiResponsesRelayService.handleRequest(
+      buildReq(requestBody, { session_id: 'codex-session-header-1' }),
+      buildRes(),
+      { id: 'responses-1', name: 'Responses Primary' },
+      { id: 'key-1' }
+    )
+
+    const hitRes = buildRes()
+    await openaiResponsesRelayService.handleRequest(
+      buildReq(requestBody, { session_id: 'codex-session-header-1' }),
+      hitRes,
+      { id: 'responses-1', name: 'Responses Primary' },
+      { id: 'key-1' }
+    )
+
+    expect(axios).toHaveBeenCalledTimes(1)
+    expect(hitRes.setHeader).toHaveBeenCalledWith('x-token-cache', 'HIT')
+    expect(hitRes.setHeader).toHaveBeenCalledWith('x-token-cache-layer', 'exact')
+    expect(metrics.recordAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stores: 1
+      })
+    )
+  })
+
+  it('does not store codex responses that only contain tool calls', async () => {
+    const storage = new MemoryTokenCacheStorage()
+    const provider = new PromptCacheTokenCacheProvider({
+      storage,
+      metrics: {
+        recordAsync: jest.fn()
+      },
+      config: {
+        ttlSeconds: 3600,
+        maxEntries: 100
+      }
+    })
+    openaiResponsesRelayService.setTokenCacheProvider(provider)
+
+    const requestBody = buildCodexResponsesBody({
+      messages: [{ role: 'user', content: 'Search the repo for token cache hooks.' }],
+      tools: [buildSearchTool()],
+      tool_choice: 'auto',
+      prompt_cache_key: 'codex-pre-tool-request'
+    })
+
+    axios
+      .mockResolvedValueOnce(
+        buildToolCallResponse({
+          id: 'resp_tool_call_1',
+          callId: 'call_search_1',
+          toolName: 'mcp__workspace__search_files',
+          argumentsJson: JSON.stringify({ query: 'token cache hooks' }),
+          usage: {
+            input_tokens: 128,
+            output_tokens: 16,
+            total_tokens: 144
+          }
+        })
+      )
+      .mockResolvedValueOnce(
+        buildToolCallResponse({
+          id: 'resp_tool_call_2',
+          callId: 'call_search_1',
+          toolName: 'mcp__workspace__search_files',
+          argumentsJson: JSON.stringify({ query: 'token cache hooks' }),
+          usage: {
+            input_tokens: 128,
+            output_tokens: 16,
+            total_tokens: 144
+          }
+        })
+      )
+
+    await openaiResponsesRelayService.handleRequest(
+      buildReq(requestBody),
+      buildRes(),
+      { id: 'responses-1', name: 'Responses Primary' },
+      { id: 'key-1' }
+    )
+
+    const secondRes = buildRes()
+    await openaiResponsesRelayService.handleRequest(
+      buildReq(requestBody),
+      secondRes,
+      { id: 'responses-1', name: 'Responses Primary' },
+      { id: 'key-1' }
+    )
+
+    expect(storage.data.size).toBe(0)
+    expect(axios).toHaveBeenCalledTimes(2)
+    expect(secondRes.setHeader).not.toHaveBeenCalledWith('x-token-cache', 'HIT')
+    expect(secondRes.status).toHaveBeenCalledWith(200)
+    expect(secondRes.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'resp_tool_call_2'
       })
     )
   })

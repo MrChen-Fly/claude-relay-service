@@ -39,6 +39,11 @@ const emptyTokenCacheSummary = Object.freeze({
   exactHits: 0,
   toolResultHits: 0,
   semanticHits: 0,
+  providerPromptCacheRequests: 0,
+  providerPromptCacheReadRequests: 0,
+  providerPromptCacheWriteRequests: 0,
+  providerPromptCacheReadTokens: 0,
+  providerPromptCacheWriteTokens: 0,
   hitRate: 0,
   bypasses: 0,
   semanticSkips: 0
@@ -95,6 +100,19 @@ const topIssue = computed(() => {
   }
 })
 
+const buildProviderPromptCacheSummary = (recent) => {
+  const readRequests = Number(recent.providerPromptCacheReadRequests) || 0
+  const writeRequests = Number(recent.providerPromptCacheWriteRequests) || 0
+  const readTokens = Number(recent.providerPromptCacheReadTokens) || 0
+  const writeTokens = Number(recent.providerPromptCacheWriteTokens) || 0
+
+  if (readRequests <= 0 && writeRequests <= 0 && readTokens <= 0 && writeTokens <= 0) {
+    return '上游 Prompt Cache 暂无读写回报。'
+  }
+
+  return `上游 Prompt Cache：复用 ${formatNumber(readRequests)} 次 · 建档 ${formatNumber(writeRequests)} 次 · 读 ${formatNumber(readTokens)} token · 建 ${formatNumber(writeTokens)} token`
+}
+
 const summaryCards = computed(() => {
   const recent = tokenCacheRecent.value
   const issue = topIssue.value
@@ -102,17 +120,17 @@ const summaryCards = computed(() => {
 
   return [
     {
-      title: `近 ${windowLabel.value} 命中率`,
+      title: `近 ${windowLabel.value} 本地命中率`,
       value: clampPercent(recent.hitRate),
       primary: `命中 ${formatNumber(recent.hits)} / 可缓存 ${formatNumber(recent.eligibleRequests)}`,
-      secondary: '只看这个值，就能判断缓存有没有真正起作用。',
+      secondary: '这里只统计 relay 本地复用；上游 Prompt Cache 单独展示。',
       valueClass: 'text-emerald-600 dark:text-emerald-400'
     },
     {
-      title: '复用请求',
+      title: '本地复用',
       value: formatNumber(recent.hits),
       primary: `精确 ${formatNumber(recent.exactHits)} · 工具 ${formatNumber(recent.toolResultHits)} · 语义 ${formatNumber(recent.semanticHits)}`,
-      secondary: `最近新写入 ${formatNumber(recent.stores)} 次`,
+      secondary: buildProviderPromptCacheSummary(recent),
       valueClass: 'text-violet-600 dark:text-violet-400'
     },
     {

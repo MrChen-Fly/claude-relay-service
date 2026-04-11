@@ -23,7 +23,13 @@ function stableStringify(value) {
   }
 }
 
-function buildToolingExactKeyInput({ endpointPath = '', requestBody = {}, messages = [] } = {}) {
+function buildToolingExactKeyInput({
+  endpointPath = '',
+  requestBody = {},
+  messages = [],
+  stateAnchor = {},
+  requestClass = ''
+} = {}) {
   return stableStringify({
     endpointPath: String(endpointPath || '').replace(/^\/v1\//, '/'),
     model: requestBody.model || null,
@@ -37,7 +43,23 @@ function buildToolingExactKeyInput({ endpointPath = '', requestBody = {}, messag
     toolChoice: requestBody.tool_choice ?? null,
     parallelToolCalls: requestBody.parallel_tool_calls ?? null,
     reasoning: requestBody.reasoning ?? null,
-    maxOutputTokens: requestBody.max_output_tokens ?? requestBody.max_completion_tokens ?? null
+    maxOutputTokens: requestBody.max_output_tokens ?? requestBody.max_completion_tokens ?? null,
+    responseFormat: requestBody.response_format ?? null,
+    textFormat: requestBody.text ?? null,
+    include: requestBody.include ?? null,
+    store: requestBody.store ?? null,
+    requestClass: requestClass || null,
+    previousResponseId:
+      requestBody.previous_response_id ??
+      requestBody.previousResponseId ??
+      stateAnchor.previousResponseId ??
+      null,
+    conversationId:
+      requestBody.conversation_id ??
+      requestBody.conversationId ??
+      stateAnchor.conversationId ??
+      null,
+    sessionHash: stateAnchor.sessionHash || null
   })
 }
 

@@ -19,6 +19,11 @@ const WATCH_FIELDS = [
   'exactHits',
   'toolResultHits',
   'toolResultStores',
+  'providerPromptCacheRequests',
+  'providerPromptCacheReadRequests',
+  'providerPromptCacheWriteRequests',
+  'providerPromptCacheReadTokens',
+  'providerPromptCacheWriteTokens',
   'semanticSkips',
   'semanticChunkedRequests',
   'semanticChunkedChunks'
@@ -451,6 +456,10 @@ async function main() {
       beforeStats.metrics?.semanticSkipReasons?.total,
       afterStats.metrics?.semanticSkipReasons?.total
     )
+    const bypassReasonDelta = diffBreakdown(
+      beforeStats.metrics?.bypassReasons?.total,
+      afterStats.metrics?.bypassReasons?.total
+    )
 
     const summary = {
       baseUrl: BASE_URL,
@@ -478,6 +487,7 @@ async function main() {
       },
       observations,
       metricsDelta,
+      bypassReasonDelta,
       semanticSkipReasonDelta,
       storageAfter: afterStats.storage || {}
     }

@@ -4,6 +4,13 @@ const { extractToolResultCacheCandidates } = require('./toolResultCacheCandidate
 const { NoopToolResultCacheProvider } = require('./toolResultCacheProvider')
 const ExactTokenCache = require('./exactTokenCache')
 const { isSemanticInputTooLargeError } = require('./semanticProviderErrors')
+const {
+  buildDiagnosticEvent,
+  buildHitMetrics,
+  buildHitResult,
+  getReplayStoreSkipReason,
+  resolveSemanticHitLayer
+} = require('./promptCacheProviderSupport')
 const logger = require('../../utils/logger')
 
 class PromptCacheTokenCacheProvider extends TokenCacheProvider {
@@ -36,52 +43,6 @@ class PromptCacheTokenCacheProvider extends TokenCacheProvider {
     this.metrics.recordAsync(fields)
   }
 
-  _buildHitResult(entry, layer, score = undefined) {
-    const headers = {
-      'x-token-cache': 'HIT',
-      'x-token-cache-layer': layer,
-      'x-token-cache-provider': this.getName()
-    }
-
-    if (score !== undefined && score !== null) {
-      headers['x-token-cache-score'] = String(score || 0)
-    }
-
-    return {
-      hit: true,
-      statusCode: entry.statusCode || 200,
-      body: entry.body,
-      headers
-    }
-  }
-
-  _buildHitMetrics(layer) {
-    if (layer === 'exact') {
-      return {
-        hits: 1,
-        exactHits: 1
-      }
-    }
-
-    if (layer === 'tool_result') {
-      return {
-        hits: 1,
-        toolResultHits: 1
-      }
-    }
-
-    const semanticMetrics = {
-      hits: 1,
-      semanticHits: 1
-    }
-
-    if (layer === 'semantic_verified') {
-      semanticMetrics.semanticVerifiedHits = 1
-    }
-
-    return semanticMetrics
-  }
-
   _recordDiagnosticEvent(event = {}) {
     if (!this.diagnostics?.recordAsync) {
       return
@@ -91,52 +52,11 @@ class PromptCacheTokenCacheProvider extends TokenCacheProvider {
   }
 
   _buildDiagnosticEvent(context, evaluation, extra = {}) {
-    const diagnostics = evaluation?.diagnostics || {}
-
-    return {
-      timestamp: extra.timestamp || Date.now(),
-      eventType: extra.eventType || 'unknown',
-      layer: extra.layer || '',
-      reason: extra.reason || '',
-      provider: this.getName(),
-      accountId: context?.accountId || '',
-      accountName: context?.accountName || '',
-      requestedModel: context?.requestedModel || context?.requestBody?.model || '',
-      promptCacheKey: context?.promptCacheKey || '',
-      sessionHash: context?.sessionHash || '',
-      conversationId: context?.conversationId || '',
-      cacheKey: evaluation?.cacheKey || '',
-      scopeKey: evaluation?.scopeKey || '',
-      cacheStrategy: evaluation?.cacheStrategy || '',
-      semanticEligible: evaluation?.semanticEligible !== false,
-      toolCandidateCount: Number(
-        evaluation?.toolCandidateCount ||
-          (Array.isArray(evaluation?.toolResultCandidates)
-            ? evaluation.toolResultCandidates.length
-            : 0)
-      ),
-      messageCount: Number(diagnostics.messageCount || 0),
-      promptLength: Number(diagnostics.promptLength || 0),
-      transcriptLength: Number(diagnostics.transcriptLength || 0),
-      systemLength: Number(diagnostics.systemLength || 0),
-      promptHash: diagnostics.promptHash || '',
-      transcriptHash: diagnostics.transcriptHash || '',
-      systemHash: diagnostics.systemHash || '',
-      score: extra.score,
-      statusCode: extra.statusCode
-    }
+    return buildDiagnosticEvent(this.getName(), context, evaluation, extra)
   }
 
   _resolveSemanticHitLayer(cacheKey, semanticHit = {}) {
-    if (semanticHit.layer === 'semantic_verified') {
-      return 'semantic_verified'
-    }
-
-    if (semanticHit.cacheKey === cacheKey) {
-      return 'exact'
-    }
-
-    return semanticHit.layer || 'semantic'
+    return resolveSemanticHitLayer(cacheKey, semanticHit)
   }
 
   _evaluateContext(context) {
@@ -174,9 +94,10 @@ class PromptCacheTokenCacheProvider extends TokenCacheProvider {
     }
 
     const layer = result.layer || 'tool_result'
-    this._recordMetrics(this._buildHitMetrics(layer))
+    this._recordMetrics(buildHitMetrics(layer))
 
-    const hitResult = this._buildHitResult(
+    const hitResult = buildHitResult(
+      this.getName(),
       {
         statusCode: result.statusCode || result.status || 200,
         body: result.body
@@ -218,7 +139,7 @@ class PromptCacheTokenCacheProvider extends TokenCacheProvider {
       hits: 1,
       exactHits: 1
     })
-    return this._buildHitResult(exactHit, 'exact')
+    return buildHitResult(this.getName(), exactHit, 'exact')
   }
 
   async lookup(context) {
@@ -257,7 +178,7 @@ class PromptCacheTokenCacheProvider extends TokenCacheProvider {
           const semanticEntry = await this.exactCache.get(semanticHit.cacheKey)
           if (semanticEntry) {
             const hitLayer = this._resolveSemanticHitLayer(evaluation.cacheKey, semanticHit)
-            this._recordMetrics(this._buildHitMetrics(hitLayer))
+            this._recordMetrics(buildHitMetrics(hitLayer))
             this._recordDiagnosticEvent(
               this._buildDiagnosticEvent(context, evaluation, {
                 eventType: 'hit',
@@ -265,7 +186,7 @@ class PromptCacheTokenCacheProvider extends TokenCacheProvider {
                 score: semanticHit.score
               })
             )
-            return this._buildHitResult(semanticEntry, hitLayer, semanticHit.score)
+            return buildHitResult(this.getName(), semanticEntry, hitLayer, semanticHit.score)
           }
         }
 
@@ -366,6 +287,21 @@ class PromptCacheTokenCacheProvider extends TokenCacheProvider {
       return {
         stored: false,
         reason: evaluation.reason
+      }
+    }
+
+    const replayStoreSkipReason = getReplayStoreSkipReason(context, response)
+    if (replayStoreSkipReason) {
+      this._recordDiagnosticEvent(
+        this._buildDiagnosticEvent(context, evaluation, {
+          eventType: 'store_skip',
+          reason: replayStoreSkipReason,
+          statusCode: response.statusCode || response.status || 200
+        })
+      )
+      return {
+        stored: false,
+        reason: replayStoreSkipReason
       }
     }
 

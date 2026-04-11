@@ -131,7 +131,7 @@ describe('prompt-cache token cache provider', () => {
     )
   })
 
-  it('bypasses stateful multi-turn responses conversations', () => {
+  it('keeps stateful multi-turn responses conversations exact-cacheable', () => {
     const firstEvaluation = evaluateTokenCacheRequest({
       endpointPath: '/v1/responses',
       requestBody: {
@@ -158,16 +158,19 @@ describe('prompt-cache token cache provider', () => {
 
     expect(firstEvaluation).toEqual(
       expect.objectContaining({
-        eligible: false,
-        reason: 'stateful_conversation'
+        eligible: true,
+        semanticEligible: false,
+        cacheStrategy: 'exact_only'
       })
     )
   })
 
-  it('bypasses responses requests when relay context carries a session header', () => {
+  it('bypasses opaque responses requests when relay context carries only a session header', () => {
     const evaluation = evaluateTokenCacheRequest({
       endpointPath: '/v1/responses',
       headerSessionId: 'codex-session-1',
+      sessionKey: 'codex-session-1',
+      sessionHash: 'session-hash-1',
       requestBody: {
         model: 'gpt-5',
         input: 'Explain quantum physics',
@@ -178,9 +181,38 @@ describe('prompt-cache token cache provider', () => {
     expect(evaluation).toEqual(
       expect.objectContaining({
         eligible: false,
-        reason: 'stateful_conversation'
+        reason: 'stateful_unanchored'
       })
     )
+  })
+
+  it('keeps previous_response_id responses requests exact-cacheable and disables semantic reuse', () => {
+    const evaluation = evaluateTokenCacheRequest({
+      endpointPath: '/v1/responses',
+      sessionKey: 'session-prev-1',
+      sessionHash: 'session-prev-hash-1',
+      requestBody: {
+        model: 'gpt-5',
+        previous_response_id: 'resp_prev_1',
+        input: [
+          {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'Explain quantum physics' }]
+          }
+        ],
+        stream: false
+      }
+    })
+
+    expect(evaluation).toEqual(
+      expect.objectContaining({
+        eligible: true,
+        semanticEligible: false,
+        cacheStrategy: 'exact_only'
+      })
+    )
+    expect(evaluation.exactKeyInput).toContain('resp_prev_1')
   })
 
   it('keeps tool requests eligible but exact-only', () => {
@@ -624,6 +656,63 @@ describe('prompt-cache token cache provider', () => {
 
     expect(semanticEngine.findSimilar).not.toHaveBeenCalled()
     expect(semanticEngine.store).not.toHaveBeenCalled()
+  })
+
+  it('does not store non-terminal tool-call responses in the exact cache', async () => {
+    const storage = new MemoryTokenCacheStorage()
+    const diagnostics = {
+      recordAsync: jest.fn()
+    }
+    const provider = new PromptCacheTokenCacheProvider({
+      storage,
+      diagnostics,
+      metrics: {
+        recordAsync: jest.fn()
+      }
+    })
+    const context = {
+      endpointPath: '/v1/responses',
+      requestBody: buildCodexResponsesBody({
+        messages: [{ role: 'user', content: 'Search the repo for token cache hooks.' }],
+        tools: [buildSearchTool()],
+        tool_choice: 'auto'
+      })
+    }
+
+    await expect(
+      provider.store(context, {
+        statusCode: 200,
+        body: {
+          id: 'resp_tool_call_1',
+          object: 'response',
+          status: 'completed',
+          model: 'gpt-5',
+          output: [
+            {
+              id: 'fc_1',
+              type: 'function_call',
+              call_id: 'call_search_1',
+              name: 'mcp__workspace__search_files',
+              arguments: JSON.stringify({ query: 'token cache hooks' })
+            }
+          ]
+        }
+      })
+    ).resolves.toEqual({
+      stored: false,
+      reason: 'non_terminal_response'
+    })
+
+    await expect(provider.lookup(context)).resolves.toEqual({
+      hit: false,
+      reason: 'cache_miss'
+    })
+    expect(diagnostics.recordAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'store_skip',
+        reason: 'non_terminal_response'
+      })
+    )
   })
 
   it('falls back to an exact hit when semantic lookup fails', async () => {

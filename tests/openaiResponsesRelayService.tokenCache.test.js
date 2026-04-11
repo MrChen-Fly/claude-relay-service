@@ -27,6 +27,9 @@ jest.mock('../src/utils/logger', () => ({
   warn: jest.fn(),
   error: jest.fn()
 }))
+jest.mock('../src/services/tokenCache/tokenCacheMetricsService', () => ({
+  recordAsync: jest.fn()
+}))
 
 const EventEmitter = require('events')
 const { Readable } = require('stream')
@@ -34,6 +37,7 @@ const axios = require('axios')
 const apiKeyService = require('../src/services/apiKeyService')
 const openaiResponsesAccountService = require('../src/services/account/openaiResponsesAccountService')
 const openaiResponsesRelayService = require('../src/services/relay/openaiResponsesRelayService')
+const tokenCacheMetricsService = require('../src/services/tokenCache/tokenCacheMetricsService')
 const { buildTokenCacheRequestContext } = require('../src/services/tokenCache/tokenCacheProvider')
 const {
   buildResponsesClientAttempts
@@ -363,6 +367,13 @@ describe('openaiResponsesRelayService token cache hooks', () => {
         })
       })
     )
+    expect(tokenCacheMetricsService.recordAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerPromptCacheRequests: 1,
+        providerPromptCacheReadRequests: 1,
+        providerPromptCacheReadTokens: 121344
+      })
+    )
     expect(res.status).toHaveBeenCalledWith(200)
   })
 
@@ -622,7 +633,7 @@ describe('openaiResponsesRelayService token cache hooks', () => {
         data: Readable.from([
           'data: {"type":"response.created","response":{"id":"resp_stream_1","object":"response","created_at":"2026-04-09T00:00:00.000Z","status":"in_progress","model":"gpt-5.3-codex","output":[]}}\n\n',
           'data: {"type":"response.output_item.done","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"A streamed answer","annotations":[]}]}}\n\n',
-          'data: {"type":"response.completed","response":{"id":"resp_stream_1","object":"response","created_at":"2026-04-09T00:00:00.000Z","status":"completed","model":"gpt-5.3-codex","output":[{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"A streamed answer","annotations":[]}]}],"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}\n\n'
+          'data: {"type":"response.completed","response":{"id":"resp_stream_1","object":"response","created_at":"2026-04-09T00:00:00.000Z","status":"completed","model":"gpt-5.3-codex","output":[{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"A streamed answer","annotations":[]}]}],"usage":{"input_tokens":10,"input_tokens_details":{"cached_tokens":6},"cache_creation_input_tokens":2,"output_tokens":5,"total_tokens":17}}}\n\n'
         ])
       },
       res,
@@ -651,6 +662,15 @@ describe('openaiResponsesRelayService token cache hooks', () => {
           model: 'gpt-5.3-codex',
           status: 'completed'
         })
+      })
+    )
+    expect(tokenCacheMetricsService.recordAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerPromptCacheRequests: 1,
+        providerPromptCacheReadRequests: 1,
+        providerPromptCacheWriteRequests: 1,
+        providerPromptCacheReadTokens: 6,
+        providerPromptCacheWriteTokens: 2
       })
     )
     expect(res.end).toHaveBeenCalled()

@@ -55,7 +55,7 @@ describe('requestTextExtractor codex request shapes', () => {
     expect(evaluation.exactKeyInput).toContain('mcp__workspace__search_files')
   })
 
-  it('bypasses codex responses requests with tool call history', () => {
+  it('keeps inline codex tool conversations exact-cacheable', () => {
     const evaluation = evaluateTokenCacheRequest({
       endpointPath: '/v1/responses',
       requestBody: buildCodexResponsesBody({
@@ -89,10 +89,12 @@ describe('requestTextExtractor codex request shapes', () => {
 
     expect(evaluation).toEqual(
       expect.objectContaining({
-        eligible: false,
-        reason: 'stateful_conversation'
+        eligible: true,
+        semanticEligible: false,
+        cacheStrategy: 'exact_only'
       })
     )
+    expect(evaluation.exactKeyInput).toContain('mcp__workspace__search_files')
   })
 
   it('normalizes chat tool call ids out of the exact cache fingerprint', () => {
@@ -147,7 +149,7 @@ describe('requestTextExtractor codex request shapes', () => {
     expect(firstEvaluation.exactKeyInput).not.toBe(thirdEvaluation.exactKeyInput)
   })
 
-  it('bypasses ultra-long deterministic codex requests once they carry conversation history', () => {
+  it('keeps ultra-long deterministic codex requests exact-cacheable once they carry inline conversation history', () => {
     const ultraLongPrompt = Array.from(
       { length: 4096 },
       (_, index) => `Segment ${index} traces the token cache boundary carefully.`
@@ -179,15 +181,71 @@ describe('requestTextExtractor codex request shapes', () => {
 
     expect(firstEvaluation).toEqual(
       expect.objectContaining({
-        eligible: false,
-        reason: 'stateful_conversation'
+        eligible: true,
+        semanticEligible: false,
+        cacheStrategy: 'exact_only'
       })
     )
     expect(secondEvaluation).toEqual(
       expect.objectContaining({
-        eligible: false,
-        reason: 'stateful_conversation'
+        eligible: true,
+        semanticEligible: false,
+        cacheStrategy: 'exact_only'
       })
     )
+  })
+
+  it('bypasses opaque session-keyed codex requests without a turn anchor', () => {
+    const evaluation = evaluateTokenCacheRequest({
+      endpointPath: '/v1/responses',
+      headerSessionId: 'codex-session-1',
+      sessionKey: 'codex-session-1',
+      sessionHash: 'abc123',
+      requestBody: buildCodexResponsesBody({
+        messages: [{ role: 'user', content: 'Reply with SESSION_ONLY.' }],
+        prompt_cache_key: 'codex-session-only'
+      })
+    })
+
+    expect(evaluation).toEqual(
+      expect.objectContaining({
+        eligible: false,
+        reason: 'stateful_unanchored'
+      })
+    )
+  })
+
+  it('keeps previous_response_id keyed codex requests exact-cacheable and isolates anchors', () => {
+    const buildAnchoredEvaluation = (previousResponseId) =>
+      evaluateTokenCacheRequest({
+        endpointPath: '/v1/responses',
+        requestBody: {
+          model: 'gpt-5',
+          input: [
+            {
+              type: 'message',
+              role: 'user',
+              content: [{ type: 'input_text', text: 'Reply with ANCHORED_CACHE_OK.' }]
+            }
+          ],
+          previous_response_id: previousResponseId,
+          stream: false
+        },
+        sessionKey: `session-${previousResponseId}`,
+        sessionHash: `hash-${previousResponseId}`
+      })
+
+    const firstEvaluation = buildAnchoredEvaluation('resp_prev_1')
+    const secondEvaluation = buildAnchoredEvaluation('resp_prev_2')
+
+    expect(firstEvaluation).toEqual(
+      expect.objectContaining({
+        eligible: true,
+        semanticEligible: false,
+        cacheStrategy: 'exact_only'
+      })
+    )
+    expect(firstEvaluation.exactKeyInput).toContain('resp_prev_1')
+    expect(firstEvaluation.exactKeyInput).not.toBe(secondEvaluation.exactKeyInput)
   })
 })

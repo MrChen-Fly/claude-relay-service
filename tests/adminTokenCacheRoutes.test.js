@@ -73,22 +73,32 @@ describe('admin token cache routes', () => {
     tokenCacheMetricsService.getSnapshot.mockResolvedValue({
       enabled: true,
       windowMinutes: 60,
-      recent: {
-        hits: 5,
-        toolResultHits: 2,
-        toolResultStores: 1,
-        semanticChunkedRequests: 1,
-        semanticChunkedChunks: 3,
-        semanticSkips: 1
-      },
-      total: {
-        hits: 10,
-        toolResultHits: 4,
-        toolResultStores: 2,
-        semanticChunkedRequests: 2,
-        semanticChunkedChunks: 5,
-        semanticSkips: 2
-      },
+        recent: {
+          hits: 5,
+          toolResultHits: 2,
+          toolResultStores: 1,
+          semanticChunkedRequests: 1,
+          semanticChunkedChunks: 3,
+          semanticSkips: 1,
+          providerPromptCacheRequests: 2,
+          providerPromptCacheReadRequests: 2,
+          providerPromptCacheWriteRequests: 1,
+          providerPromptCacheReadTokens: 3200,
+          providerPromptCacheWriteTokens: 800
+        },
+        total: {
+          hits: 10,
+          toolResultHits: 4,
+          toolResultStores: 2,
+          semanticChunkedRequests: 2,
+          semanticChunkedChunks: 5,
+          semanticSkips: 2,
+          providerPromptCacheRequests: 6,
+          providerPromptCacheReadRequests: 5,
+          providerPromptCacheWriteRequests: 3,
+          providerPromptCacheReadTokens: 9600,
+          providerPromptCacheWriteTokens: 2400
+        },
       bypassReasons: {
         recent: [{ reason: 'temperature_nonzero', count: 2 }],
         total: [{ reason: 'temperature_nonzero', count: 3 }]
@@ -154,22 +164,32 @@ describe('admin token cache routes', () => {
         metrics: {
           enabled: true,
           windowMinutes: 60,
-          recent: {
-            hits: 5,
-            toolResultHits: 2,
-            toolResultStores: 1,
-            semanticChunkedRequests: 1,
-            semanticChunkedChunks: 3,
-            semanticSkips: 1
-          },
-          total: {
-            hits: 10,
-            toolResultHits: 4,
-            toolResultStores: 2,
-            semanticChunkedRequests: 2,
-            semanticChunkedChunks: 5,
-            semanticSkips: 2
-          },
+            recent: {
+              hits: 5,
+              toolResultHits: 2,
+              toolResultStores: 1,
+              semanticChunkedRequests: 1,
+              semanticChunkedChunks: 3,
+              semanticSkips: 1,
+              providerPromptCacheRequests: 2,
+              providerPromptCacheReadRequests: 2,
+              providerPromptCacheWriteRequests: 1,
+              providerPromptCacheReadTokens: 3200,
+              providerPromptCacheWriteTokens: 800
+            },
+            total: {
+              hits: 10,
+              toolResultHits: 4,
+              toolResultStores: 2,
+              semanticChunkedRequests: 2,
+              semanticChunkedChunks: 5,
+              semanticSkips: 2,
+              providerPromptCacheRequests: 6,
+              providerPromptCacheReadRequests: 5,
+              providerPromptCacheWriteRequests: 3,
+              providerPromptCacheReadTokens: 9600,
+              providerPromptCacheWriteTokens: 2400
+            },
           bypassReasons: {
             recent: [{ reason: 'temperature_nonzero', count: 2 }],
             total: [{ reason: 'temperature_nonzero', count: 3 }]

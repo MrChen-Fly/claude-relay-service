@@ -1,5 +1,6 @@
 const crypto = require('crypto')
 const { buildToolingExactKeyInput, stableStringify } = require('./requestCacheFingerprint')
+const { classifyResponsesConversation } = require('./responsesConversationState')
 
 function normalizeText(value) {
   if (typeof value !== 'string') {
@@ -260,54 +261,6 @@ function isResponsesRequest(body = {}, endpointPath = '') {
   )
 }
 
-function hasExplicitConversationState(body = {}, context = {}) {
-  const candidates = [
-    context.headerSessionId,
-    context.bodySessionId,
-    context.conversationId,
-    body.session_id,
-    body.sessionId,
-    body.conversation_id,
-    body.conversationId,
-    body.previous_response_id,
-    body.previousResponseId
-  ]
-
-  return candidates.some((value) => {
-    if (typeof value === 'string') {
-      return value.trim().length > 0
-    }
-
-    return value !== undefined && value !== null && value !== false
-  })
-}
-
-function hasStatefulResponsesConversation(body = {}, messages = [], context = {}) {
-  if (hasExplicitConversationState(body, context)) {
-    return true
-  }
-
-  let userTurnCount = 0
-  for (const message of messages) {
-    if (!message || message.role === 'system') {
-      continue
-    }
-
-    if (message.role === 'assistant' || message.role === 'tool') {
-      return true
-    }
-
-    if (message.role === 'user' && message.content) {
-      userTurnCount += 1
-      if (userTurnCount > 1) {
-        return true
-      }
-    }
-  }
-
-  return false
-}
-
 function hasStructuredOutput(body = {}) {
   const responseFormatType = body.response_format?.type
   const textFormatType = body.text?.format?.type
@@ -362,6 +315,55 @@ function buildSemanticScope({ requestBody = {}, endpointPath = '', systemText = 
     .digest('hex')
 }
 
+function buildEligibleEvaluation({
+  context = {},
+  requestBody = {},
+  messages = [],
+  transcriptText = '',
+  promptText = '',
+  systemText = '',
+  scopeKey = '',
+  hasTooling = false,
+  responseState = null
+} = {}) {
+  const requestClass = responseState?.requestClass || (hasTooling ? 'tooling' : 'stateless_turn')
+  const exactOnly = hasTooling || responseState?.exactEligible === true
+
+  return {
+    eligible: true,
+    reason: '',
+    promptText,
+    systemText,
+    scopeKey,
+    semanticEligible: !exactOnly,
+    cacheStrategy: exactOnly ? 'exact_only' : 'semantic_first',
+    requestClass,
+    diagnostics: {
+      hasTooling,
+      messageCount: messages.length,
+      promptLength: promptText.length,
+      transcriptLength: transcriptText.length,
+      systemLength: systemText.length,
+      promptHash: buildTextHash(promptText),
+      transcriptHash: buildTextHash(transcriptText),
+      systemHash: buildTextHash(systemText),
+      requestClass
+    },
+    exactKeyInput: exactOnly
+      ? buildToolingExactKeyInput({
+          endpointPath: context.endpointPath,
+          requestBody,
+          messages,
+          stateAnchor: responseState?.stateAnchor,
+          requestClass
+        })
+      : JSON.stringify({
+          scopeKey,
+          promptText
+        })
+  }
+}
+
 function evaluateTokenCacheRequest(context = {}) {
   const requestBody =
     context.requestBody && typeof context.requestBody === 'object' ? context.requestBody : {}
@@ -371,9 +373,12 @@ function evaluateTokenCacheRequest(context = {}) {
   const messageText = buildTranscript(messages)
   const systemText = extractSystemText(messages)
   const hasTooling = hasDynamicTooling(requestBody, messages)
+  const responseState = responsesRequest
+    ? classifyResponsesConversation(requestBody, messages, context)
+    : null
 
-  if (responsesRequest && hasStatefulResponsesConversation(requestBody, messages, context)) {
-    return { eligible: false, reason: 'stateful_conversation' }
+  if (responseState?.bypassReason) {
+    return { eligible: false, reason: responseState.bypassReason }
   }
 
   if (hasStructuredOutput(requestBody)) {
@@ -394,35 +399,17 @@ function evaluateTokenCacheRequest(context = {}) {
     systemText
   })
 
-  return {
-    eligible: true,
-    reason: '',
+  return buildEligibleEvaluation({
+    context,
+    requestBody,
+    messages,
+    transcriptText: messageText,
     promptText,
     systemText,
     scopeKey,
-    semanticEligible: !hasTooling,
-    cacheStrategy: hasTooling ? 'exact_only' : 'semantic_first',
-    diagnostics: {
-      hasTooling,
-      messageCount: messages.length,
-      promptLength: promptText.length,
-      transcriptLength: messageText.length,
-      systemLength: systemText.length,
-      promptHash: buildTextHash(promptText),
-      transcriptHash: buildTextHash(messageText),
-      systemHash: buildTextHash(systemText)
-    },
-    exactKeyInput: hasTooling
-      ? buildToolingExactKeyInput({
-          endpointPath: context.endpointPath,
-          requestBody,
-          messages
-        })
-      : JSON.stringify({
-          scopeKey,
-          promptText
-        })
-  }
+    hasTooling,
+    responseState
+  })
 }
 
 module.exports = {
