@@ -97,16 +97,70 @@ describe('openaiRoutes protocol bridge', () => {
     expect(req.body.prompt_cache_retention).toEqual({ type: 'ephemeral', ttl_seconds: 86400 })
   })
 
-  it('returns the scheduler public message when no compatible account is available', async () => {
-    const error = new Error('scheduler failure')
-    error.statusCode = 400
-    error.publicMessage = 'No available OpenAI accounts support the requested features'
-    const scheduler = require('../src/services/scheduler/unifiedOpenAIScheduler')
-    scheduler.selectAccountForApiKey.mockRejectedValue(error)
+  it('falls back to responses when normalizeProviderEndpoint relies on service instance state', async () => {
+    const openaiResponsesAccountService = require('../src/services/account/openaiResponsesAccountService')
+
+    openaiResponsesAccountService.normalizeProviderEndpoint.mockImplementation(
+      function (providerEndpoint) {
+        return this?.VALID_PROVIDER_ENDPOINTS?.includes(providerEndpoint)
+          ? providerEndpoint
+          : 'responses'
+      }
+    )
 
     const req = {
       apiKey: {
-        id: 'api-key-2',
+        id: 'api-key-5',
+        permissions: ['openai']
+      },
+      path: '/v1/responses',
+      url: '/v1/responses',
+      originalUrl: '/openai/v1/responses',
+      headers: {
+        'user-agent': 'codex_cli_rs/0.81.0 (Windows 10.0.26100; x86_64) WindowsTerminal',
+        session_id: 'y'.repeat(32)
+      },
+      body: {
+        model: 'mimo-v2-pro',
+        stream: false,
+        input: 'hello'
+      },
+      _openaiAuthContext: {
+        accountType: 'openai-responses',
+        account: {
+          id: 'responses-2',
+          name: 'Fallback Endpoint Account'
+        }
+      }
+    }
+    const res = {}
+
+    const result = await handleResponses(req, res)
+
+    expect(result).toBe('bridged')
+    expect(bridgeService.handleResponsesClientRequest).toHaveBeenCalledWith(
+      req,
+      res,
+      { id: 'responses-2', name: 'Fallback Endpoint Account' },
+      req.apiKey,
+      'mimo-v2-pro',
+      { providerEndpoint: 'responses' }
+    )
+  })
+
+  it('returns a sanitized account error when the linked OpenAI account is unavailable', async () => {
+    const scheduler = require('../src/services/scheduler/unifiedOpenAIScheduler')
+    const openaiAccountService = require('../src/services/account/openaiAccountService')
+
+    scheduler.selectAccountForApiKey.mockResolvedValue({
+      accountId: 'openai-1',
+      accountType: 'openai'
+    })
+    openaiAccountService.getAccount.mockResolvedValue(null)
+
+    const req = {
+      apiKey: {
+        id: 'api-key-3',
         permissions: ['openai']
       },
       path: '/v1/responses',
@@ -116,9 +170,8 @@ describe('openaiRoutes protocol bridge', () => {
         'user-agent': 'codex_cli_rs/0.81.0 (Windows 10.0.26100; x86_64) WindowsTerminal'
       },
       body: {
-        model: 'mimo-v2-pro',
-        input: 'hello',
-        reasoning: { effort: 'medium' }
+        model: 'gpt-5',
+        input: 'hello'
       }
     }
     const res = {
@@ -129,10 +182,57 @@ describe('openaiRoutes protocol bridge', () => {
 
     await handleResponses(req, res)
 
-    expect(res.status).toHaveBeenCalledWith(400)
+    expect(res.status).toHaveBeenCalledWith(403)
     expect(res.json).toHaveBeenCalledWith({
       error: {
-        message: 'No available OpenAI accounts support the requested features'
+        message: 'Permission denied'
+      }
+    })
+  })
+
+  it('returns a sanitized auth error when OpenAI access token decryption fails', async () => {
+    const scheduler = require('../src/services/scheduler/unifiedOpenAIScheduler')
+    const openaiAccountService = require('../src/services/account/openaiAccountService')
+
+    scheduler.selectAccountForApiKey.mockResolvedValue({
+      accountId: 'openai-2',
+      accountType: 'openai'
+    })
+    openaiAccountService.getAccount.mockResolvedValue({
+      id: 'openai-2',
+      name: 'OpenAI Account',
+      accessToken: 'encrypted-token'
+    })
+    openaiAccountService.decrypt.mockReturnValue('')
+
+    const req = {
+      apiKey: {
+        id: 'api-key-4',
+        permissions: ['openai']
+      },
+      path: '/v1/responses',
+      url: '/v1/responses',
+      originalUrl: '/openai/v1/responses',
+      headers: {
+        'user-agent': 'codex_cli_rs/0.81.0 (Windows 10.0.26100; x86_64) WindowsTerminal'
+      },
+      body: {
+        model: 'gpt-5',
+        input: 'hello'
+      }
+    }
+    const res = {
+      headersSent: false,
+      status: jest.fn().mockReturnThis(),
+      json: jest.fn().mockReturnThis()
+    }
+
+    await handleResponses(req, res)
+
+    expect(res.status).toHaveBeenCalledWith(403)
+    expect(res.json).toHaveBeenCalledWith({
+      error: {
+        message: 'Authentication failed'
       }
     })
   })

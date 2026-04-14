@@ -36,6 +36,11 @@ const ERROR_MATCHERS = [
   { pattern: /unauthorized|invalid.*token|token.*invalid|invalid.*key/i, code: 'E003' },
   { pattern: /invalid.*api.*key|api.*key.*invalid/i, code: 'E013' },
   { pattern: /authentication|auth.*fail/i, code: 'E003' },
+  {
+    pattern:
+      /failed to decrypt openai accesstoken|token expired and refresh failed|token expired and no refresh token available|invalid_grant/i,
+    code: 'E003'
+  },
 
   // 权限错误
   { pattern: /forbidden|permission.*denied|access.*denied/i, code: 'E009' },
@@ -51,6 +56,10 @@ const ERROR_MATCHERS = [
   // 账户错误
   { pattern: /account.*disabled|organization.*disabled/i, code: 'E011' },
   { pattern: /too many active sessions/i, code: 'E011' },
+  {
+    pattern: /no available openai account found|has no valid accesstoken|has no valid apikey/i,
+    code: 'E011'
+  },
 
   // 模型错误
   { pattern: /model.*not.*found|model.*unavailable|unsupported.*model/i, code: 'E006' },

@@ -177,6 +177,14 @@ async function applyRateLimitTracking(
 }
 
 // 使用统一调度器选择 OpenAI 账户
+function buildOpenAIAuthError(message, statusCode, publicMessage, details = {}) {
+  const error = new Error(message)
+  error.statusCode = statusCode
+  error.publicMessage = publicMessage
+  Object.assign(error, details)
+  return error
+}
+
 async function getOpenAIAuthToken(
   apiKeyData,
   sessionId = null,
@@ -198,9 +206,11 @@ async function getOpenAIAuthToken(
     )
 
     if (!result || !result.accountId) {
-      const error = new Error('No available OpenAI account found')
-      error.statusCode = 402 // Payment Required - 资源耗尽
-      throw error
+      throw buildOpenAIAuthError(
+        'No available OpenAI account found',
+        402,
+        'Account temporarily unavailable'
+      )
     }
 
     // 根据账户类型获取账户详情
@@ -212,9 +222,15 @@ async function getOpenAIAuthToken(
       // 处理 OpenAI-Responses 账户
       account = await openaiResponsesAccountService.getAccount(result.accountId)
       if (!account || !account.apiKey) {
-        const error = new Error(`OpenAI-Responses account ${result.accountId} has no valid apiKey`)
-        error.statusCode = 403 // Forbidden - 账户配置错误
-        throw error
+        throw buildOpenAIAuthError(
+          `OpenAI-Responses account ${result.accountId} has no valid apiKey`,
+          403,
+          'Permission denied',
+          {
+            accountType: result.accountType,
+            accountId: result.accountId
+          }
+        )
       }
 
       // OpenAI-Responses 账户不需要 accessToken，直接返回账户信息
@@ -234,9 +250,15 @@ async function getOpenAIAuthToken(
       // 处理普通 OpenAI 账户
       account = await openaiAccountService.getAccount(result.accountId)
       if (!account || !account.accessToken) {
-        const error = new Error(`OpenAI account ${result.accountId} has no valid accessToken`)
-        error.statusCode = 403 // Forbidden - 账户配置错误
-        throw error
+        throw buildOpenAIAuthError(
+          `OpenAI account ${result.accountId} has no valid accessToken`,
+          403,
+          'Permission denied',
+          {
+            accountType: result.accountType,
+            accountId: result.accountId
+          }
+        )
       }
 
       // 检查 token 是否过期并自动刷新（双重保护）
@@ -250,25 +272,41 @@ async function getOpenAIAuthToken(
             logger.info(`✅ Token refreshed successfully in route handler`)
           } catch (refreshError) {
             logger.error(`Failed to refresh token for ${account.name}:`, refreshError)
-            const error = new Error(`Token expired and refresh failed: ${refreshError.message}`)
-            error.statusCode = 403 // Forbidden - 认证失败
-            throw error
+            throw buildOpenAIAuthError(
+              `Token expired and refresh failed: ${refreshError.message}`,
+              403,
+              'Authentication failed',
+              {
+                accountType: result.accountType,
+                accountId: result.accountId
+              }
+            )
           }
         } else {
-          const error = new Error(
-            `Token expired and no refresh token available for account ${account.name}`
+          throw buildOpenAIAuthError(
+            `Token expired and no refresh token available for account ${account.name}`,
+            403,
+            'Authentication failed',
+            {
+              accountType: result.accountType,
+              accountId: result.accountId
+            }
           )
-          error.statusCode = 403 // Forbidden - 认证失败
-          throw error
         }
       }
 
       // 解密 accessToken（account.accessToken 是加密的）
       accessToken = openaiAccountService.decrypt(account.accessToken)
       if (!accessToken) {
-        const error = new Error('Failed to decrypt OpenAI accessToken')
-        error.statusCode = 403 // Forbidden - 配置/权限错误
-        throw error
+        throw buildOpenAIAuthError(
+          'Failed to decrypt OpenAI accessToken',
+          403,
+          'Authentication failed',
+          {
+            accountType: result.accountType,
+            accountId: result.accountId
+          }
+        )
       }
 
       // 解析代理配置
@@ -298,9 +336,8 @@ async function getOpenAIAuthToken(
 }
 
 function getOpenAIResponsesProviderEndpoint(account) {
-  const { normalizeProviderEndpoint } = openaiResponsesAccountService
-  if (typeof normalizeProviderEndpoint === 'function') {
-    return normalizeProviderEndpoint(account?.providerEndpoint)
+  if (typeof openaiResponsesAccountService.normalizeProviderEndpoint === 'function') {
+    return openaiResponsesAccountService.normalizeProviderEndpoint(account?.providerEndpoint)
   }
   return account?.providerEndpoint || 'responses'
 }
